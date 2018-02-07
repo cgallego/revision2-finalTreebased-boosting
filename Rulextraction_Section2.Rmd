@@ -1,0 +1,308 @@
+---
+title: "Rule extraction - experiments new paper"
+output:
+  html_document:
+    fig_caption: yes
+    fig_height: 5
+    fig_width: 6
+    highlight: pygments
+    keep_md: yes
+    toc: yes
+---
+
+```{r set-options, verbose=TRUE, echo=FALSE, cache=FALSE, message = FALSE, warning=FALSE}
+knitr::opts_chunk$set(root.dir="Z:/Cristina/Section2/finalTreebased-boosting",
+                      echo = TRUE, verbose = TRUE, 
+                      warning=FALSE, message=FALSE, comment="", tidy = TRUE)
+
+options(width = 100)
+setwd("Z:/Cristina/Section2/finalTreebased-boosting")
+library(R.utils)
+library(caret)
+require(ggplot2)
+library("RSQLite")
+library(pROC)
+library("Boruta")
+require(data.table)
+library(rpart)
+library(rpart.plot)
+library(R.utils)
+library(pander)
+library(adabag)
+library(grDevices)
+library(inTrees)
+library(gbm)
+
+source('Functions.R')
+source('FunctionsRules.R')
+```
+
+# Incorporating T2w breast MRI in CADx of breast lesions:
+## Overall aim:
+To investigate whether we can obtain an increase in discrimination ability for the classification task of cancerous and non-cancerous lesions using T2w imaging derived features in addition to more conventional T1w CE-MRI based-features
+
+After running 10 folds of cross-validation (cv), below is the AUC distributions achieved on held-out test sets:
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+load("Z:/Cristina/Section2/finalTreebased-boosting/Outputs/T2SIvspredLMSIR_summaryResults.RData")
+
+print(summary(allcvauc_imgT1))
+print(summary(allcvauc_T2wmLMSIR))
+print(summary(allcvauc_T2wpLMSIR))
+
+# boxplots of cv-performances
+cvperfs = data.frame()
+cvperfs = rbind(cvperfs, data.frame(cvAUC=allcvauc_imgT1, group="onlyT1w"))
+cvperfs = rbind(cvperfs, data.frame(cvAUC=allcvauc_T2wmLMSIR, group="T2w measured LMSIR"))
+cvperfs = rbind(cvperfs, data.frame(cvAUC=allcvauc_T2wpLMSIR, group="T2w predicted LMSIR"))
+# find min
+minAUC = min(cvperfs$cvAUC)
+
+# plot
+p <- ggplot(cvperfs, aes(factor(group), cvAUC))
+p + geom_boxplot(aes(fill = factor(group)))
+
+```
+
+## Performance of combined T1w+T2w vs. only T1w classifiers
+### in all lesions (pooled data across cv-folds and plot pooled results)
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE, fig.width=6, fig.height=6}
+par(mfrow=c(1,1))
+n=15
+colors = rainbow(n, s = 1, v = 1, start = 0, end = max(1, n - 1)/n, alpha = 1)
+
+print("Results for T1w-only features classifier:")
+p1all = calcAUC_plot(perfall_imgT1$obs, perfall_imgT1$C, 
+                           xptext=0.45, yptext=0.75 , 1, colors[1], atitle="")
+par(new=TRUE)
+print("Results for T2w measured LMSIR features classifier:")
+p2mLMSIR = calcAUC_plot(perfall_T2wmLMSIR$obs, perfall_T2wmLMSIR$C,
+                           xptext=0.55, yptext=0.65, 2, colors[9], atitle="")
+par(new=TRUE)
+print("Results for T2w predicted LMSIR features classifier:")
+p2pLMSIR = calcAUC_plot(perfall_T2wpLMSIR$obs, perfall_T2wpLMSIR$C,
+                           xptext=0.65, yptext=0.55, 3, colors[12], 
+                  atitle="ROCs pooled heldout-patient across ALL folds")
+
+legend("bottomright", 
+       legend = c(paste0("imgT1w"),
+                  paste0("T1w+T2w measured LMSIR"),
+                  paste0("T1w+T2w predicted LMSIR")),
+       col = c(colors[1],colors[9],colors[12]), lty=c(1,2,3), lwd = 2)
+
+```
+
+### Significance t-test and Effect size:
+
+Power analysis is an important aspect of experimental design. It allows us to determine the sample size required to detect an effect of a given size with a given degree of confidence. Conversely, it allows us to determine the probability of detecting an effect of a given size with a given level of confidence, under sample size constraints. If the probability is unacceptably low, we would be wise to alter or abandon the experiment.
+
+The following four quantities have an intimate relationship:
+1.  sample size
+2.  effect size
+3.  significance level = P(Type I error) = probability of finding an effect that is not there
+4.  power = 1 - P(Type II error) = probability of finding an effect that is there
+
+Given any three, we can determine the fourth.
+
+Cohen (1988) hesitantly defined effect sizes as 
+"small,d = .2,"
+"medium,d = .5," and 
+"large,d =.8", 
+stating that "there is a certain risk in inherent in offering conventional operational definitions for those terms for use in power analysis in as diverse a field of inquiry as behavioral science" (p. 25).
+
+Effect sizes can also be thought of as the average percentile standing of the average treated (or experimental) participant relative to the average untreated (or control) participant. An ES of 0.0 indicates that the mean of thetreated group is at the 50 thpercentile of the untreated group. An ES of 0.8 indicates that the mean of the treated group is at the 79th percentile of the untreated group. An effect size of 1.7 indicates that the mean of thetreated group is at the 95.5 percentile of the untreated group.
+
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+# find significance
+# If alternative="less", the alternative is that the AUC of roc1 is smaller than the AUC of roc2
+roc.test(p2mLMSIR$ROC, p1all$ROC, method=c("bootstrap"), alternative = c("greater"), 
+         paired=TRUE, boot.stratified=TRUE)
+
+roc.test(p2pLMSIR$ROC, p1all$ROC, method=c("bootstrap"), alternative = c("greater"),
+         paired=TRUE, boot.stratified=TRUE)
+
+roc.test(p2mLMSIR$ROC, p2pLMSIR$ROC, method=c("bootstrap"), alternative = c("two.sided"),
+         paired=TRUE, boot.stratified=TRUE)
+
+library(pwr)
+# What is effect sizeof a two.sided t-test, with a
+# significance level (Type I error) = FP/N, 
+# power 1-(Type II error) = 1-FN/P,
+# 627 people group ?
+
+cm = confusionMatrix(ifelse(perfall_T2wpLMSIR$C>=rownames(p2pLMSIR$best_thr$sensitivity),"C","NC"), perfall_T2wpLMSIR$obs)
+FP = cm$table[[2]] 
+N = cm$table[[2]]+cm$table[[4]]
+FN = cm$table[[3]]
+P = cm$table[[1]]+cm$table[[3]]
+
+pwr.t.test(n=245, 
+           power=1-FN/P,
+           sig.level= FP/N,
+           alternative="two.sided")
+
+```
+#### Aim Experiment 4: Rule extraction and likelihood ratios of T1w vs. T2w diagnostic predictions
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+# read k-fold-out
+allrulesres = c()
+
+for(k in 1:10){  # 1:10f cv
+  load(paste0("Z:/Cristina/Section2/finalTreebased-boosting/Outputs/T2SIvspredLMSIR_boost_addeddiagvalue_cv",k,".RData"))
+  source('Z:/Cristina/Section2/finalTreebased-boosting/FunctionsRules.R')
+  
+  ##################
+  # Define datasets
+  ##################
+  imgT1train = T1train[,-c(ncol(T1train))]
+  imgT2train = T1T2train[,-c(ncol(T1T2train))] #"T1w+T2wSI"
+  imgT2mLMSIR = cbind(imgT2train[,-c(201,223:242)], trainpredT2LMSIR[2])#"T1w -T2wSI + measureLMSIR
+  imgT2pLMSIR = cbind(imgT2train[,-c(201,223:242)], trainpredT2LMSIR[1]) #"T1w+T2wSI_predictedLMSIR"
+  
+  # test set
+  imgT1test = T1test[,-c(ncol(T1test))]
+  T1T2test = allfT1T2[[2]][-c(201,223:ncol(allfT1T2[[2]]))]
+  imgT2mLMSIRtest  = cbind(T1T2test,  testpredT2LMSIR[2])
+  imgT2pLMSIRtest  = cbind(T1T2test,  testpredT2LMSIR[1])
+  classes = levels(imgT2pLMSIRtest[,"lesion_label"])
+  
+  # form feature dictionary
+  fdict = feature_dictionary(imgT2pLMSIR)
+  fnames = fdict$fnnames
+  
+  ############
+  # Build a train trees
+  # check performance using 10-fold cross-validation
+  #######  
+  cat("\n============ rule gbm trees imgT2pLMSIR \n")
+  # train treees
+  # create grid of evaluation points
+  gbmControl <- trainControl(method='cv', number=10,
+                             returnResamp='final', 
+                             savePredictions='final', 
+                             summaryFunction = twoClassSummary, 
+                             classProbs = TRUE)
+  
+  # for tunned parameters
+  gbmGrid = expand.grid(.n.trees = c(1000,1500,2000),
+                        .interaction.depth = c(2,3,4,6),
+                        .shrinkage =  c(0.01),
+                        .n.minobsinnode=c(10))
+  
+  # caret train cross-validated gbmModel, finalmodel has optimal parameters on training set
+  imgT2pLMSIR = na.omit(imgT2pLMSIR)
+  gbmModel <- train(lesion_label ~ .,
+                    data=imgT2pLMSIR, 
+                    method='gbm', 
+                    distribution='adaboost',
+                    trControl=gbmControl,
+                    tuneGrid=gbmGrid,
+                    verbose=FALSE,
+                    metric = "ROC")
+    
+  #predictions <- predict(object=gbmModel$, X, type='prob')
+  # summarize the model  # plot the effect of parameters on accuracy
+  print(gbmModel)
+  plot(gbmModel)
+  print(gbmModel$results)
+  
+  # transform rf object to an inTrees' format
+  X <- imgT2pLMSIR[,2:(ncol(imgT2pLMSIR))]
+  target <- imgT2pLMSIR[,"lesion_label"]
+  treeList <- myGBM2List(gbmModel$finalModel,X)
+  
+  # extract rules
+  myruleExec = myextractRules(treeList, X, ntree = gbmModel$finalModel$n.trees) 
+  ruleExec = myruleExec$ruleExec
+  rules = myruleExec$rules
+  rulesProb = myruleExec$rulesProb
+  
+  # how good are these rules or what classification we obtain by applying them. 
+  # This can be done with the handy function getRuleMetric. For the first 10 extracted rules:
+  ruleMetric <- mygetRuleMetric(rules,rulesProb,X,target,gbmModel)  # get rule metrics
+  ruleMetric[1:10,]
+
+  # a matrix including the conditions, prediction, and metrics, ordered by priority.
+  alearner <- ruleMetric
+  restest = c()
+  allselRulesIx = list()
+  for(i in 1:nrow(imgT2pLMSIRtest))
+  {
+    X = imgT2pLMSIRtest[i,2:ncol(imgT2pLMSIRtest)]
+    y = imgT2pLMSIRtest[i,"lesion_label"]
+    rulesoutput = myapplyLearner(alearner, X, y, minerr=0.10, minfrq=10/627, classes, gbmModel)
+    
+    # collect top scoring rules
+    allselRulesIx[[i]] = rulesoutput[[1]]
+    restest = rbind(restest, rulesoutput[[2]])
+  }
+  
+  # compare
+  confusionMatrix(perf_T2wpLMSIR$pred, perf_T2wpLMSIR$obs)
+  dfrestest = as.data.frame(restest, stringsAsFactors = FALSE)
+  dfrestest$predRules = ifelse(dfrestest$probModel>=0.5,"C","NC")
+  confusionMatrix(dfrestest$predRules, restest[,"obsR"])
+  
+  allrulesres = rbind(allrulesres, dfrestest) 
+  pander(allrulesres)
+  
+  # plot iter
+  ## plot ROCs each pass individually in l-o-p heldout test cases
+  par(mfrow=c(1,1))
+  n=15
+  colors = rainbow(n, s = 1, v = 1, start = 0, end = max(1, n - 1)/n, alpha = 1)
+  # plot 1/4
+  p1 = calcAUC_plot(perf_imgT1$obs, perf_imgT1$C, 
+                             xptext=0.35, yptext=0.85 , 1, colors[2], atitle="")
+  par(new=TRUE)
+  p2 = calcAUC_plot(perf_T2wmLMSIR$obs, perf_T2wmLMSIR$C, 
+                             xptext=0.45, yptext=0.75, 2, colors[9], atitle="")
+  par(new=TRUE)
+  p3 = calcAUC_plot(perf_T2wpLMSIR$obs, perf_T2wpLMSIR$C,
+                             xptext=0.55, yptext=0.65, 3, colors[11], atitle="")
+  
+  par(new=TRUE)
+  p4 = calcAUC_plot(perf_T2wpLMSIR$obs, as.numeric(restest[,"probRules"]),
+                             xptext=0.65, yptext=0.55, 4, colors[14], atitle="")
+  par(new=TRUE)
+  p5 = calcAUC_plot(perf_T2wpLMSIR$obs, as.numeric(restest[,"probModel"]),
+                             xptext=0.75, yptext=0.45, 5, colors[15], 
+                    atitle=paste0("ROCs 10f-patient out cv test k-fold= ",k))
+  
+  legend("bottomright", 
+         legend = c(paste0("T1w"),
+                    paste0("T2w+mLMSIR"),
+                    paste0("T1w+predLMSIR"),
+                    paste0("probRules"),
+                    paste0("probModel")),
+      col = c(colors[2],colors[9],colors[11],colors[14],colors[15]), lty=c(1,2,3,4,5), lwd = 2)
+  
+  # save current state k patient out
+  save.image(paste0("Outputs/gmbRule_noT2SIpredLMSIR_boost_addeddiagvalue_cv",k,".RData"))
+}
+
+# save current state k patient out
+save.image("Outputs/STEL_noT2SIpredLMSIR_boost_addeddiagvalue.RData")
+  
+```
+```{r}
+confusionMatrix(allrulesres[,"predR"], allrulesres[,"obsR"])
+
+par(mfrow=c(1,1))
+pModel = calcAUC_plot(allrulesres$obsR, as.numeric(allrulesres[,"probRules"]),
+                           xptext=0.75, yptext=0.45, 1, colors[15], 
+                  atitle="")
+par(new=TRUE)
+pRules = calcAUC_plot(allrulesres$obsR, as.numeric(allrulesres[,"probModel"]),
+                           xptext=0.65, yptext=0.55, 5, colors[2], 
+                  atitle="ROCs 10f-patient out cv test all folds ")
+
+legend("bottomright", 
+       legend = c(paste0("probRules"),
+                  paste0("probModel")),
+    col = c(colors[15],colors[2]), lty=c(1,5), lwd = 2)
+
+thresh = as.numeric(row.names(pModel$best_thr$sensitivity))
+confusionMatrix(ifelse(allrulesres[,"probModel"]>=thresh,"C","NC"), allrulesres[,"obsR"])
+
+```
+

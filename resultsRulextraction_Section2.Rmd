@@ -1,0 +1,267 @@
+---
+title: "Results Rule extraction - experiments revision 2"
+output:
+  html_document:
+    fig_caption: yes
+    fig_height: 5
+    fig_width: 6
+    highlight: pygments
+    keep_md: yes
+    toc: yes
+---
+
+```{r set-options, verbose=TRUE, echo=FALSE, cache=FALSE, message = FALSE, warning=FALSE}
+knitr::opts_chunk$set(root.dir="Z:/Cristina/Section2/revision2-finalTreebased-boosting",
+                      echo = TRUE, verbose = TRUE, 
+                      warning=FALSE, message=FALSE, comment="", tidy = TRUE)
+
+options(width = 95)
+setwd("Z:/Cristina/Section2/revision2-finalTreebased-boosting")
+library(R.utils)
+library(caret)
+require(ggplot2)
+library("RSQLite")
+library(pROC)
+library("Boruta")
+require(data.table)
+library(rpart)
+library(rpart.plot)
+library(R.utils)
+library(pander)
+library(adabag)
+library(grDevices)
+library(inTrees)
+library(gbm)
+library(xtable)
+  
+source('Functions.R')
+source('FunctionsRules.R')
+
+```
+
+
+## Rules: Extract and summarize rules per k cross
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=6, fig.height=6}
+# read k-fold-out
+avererrorTop5 = c()
+averprobTop5 = c()
+classTop5 = c()
+T2wfeatureflag = c()
+eachtestRules = list()
+
+# allinfo
+allTestinfo = c()
+allTraininfo = c()
+allidx = 0
+
+## for 2nd analysis
+alltopRules = c()
+
+for(k in 1:10){  # 1:10f cv
+  load(paste0("Outputs/gmbRule_noT2SIpredLMSIR_boost_addeddiagvalue_cv",k,".RData"))
+  source('Z:/Cristina/Section2/revision2-finalTreebased-boosting/FunctionsRules.R')
+  
+  # form feature dictionary
+  fdict = feature_dictionary(imgT2pLMSIR)
+  fnames = fdict$fnnames
+  thresh = as.numeric(row.names(p4$best_thr$sensitivity))
+  
+  allTestinfo = rbind(allTestinfo, T1T2testinfo)
+  allTraininfo = rbind(allTraininfo, imgT2pLMSIRtest)
+  print(paste0("Reading cv-fold: ",k," left out cases"))
+
+  # for 2ns analys8is
+  eachtestTopRules = list()
+  allseltoprules = c()
+  
+  # present rules
+  # collect top scoring rules per k cross
+  for(idx in 1:nrow(imgT2pLMSIRtest)) {
+    ##############
+    ## first analysis
+    X = imgT2pLMSIRtest[idx,2:ncol(imgT2pLMSIRtest)]
+    y = imgT2pLMSIRtest[idx,"lesion_label"]
+    rulesoutput = myapplyLearner(alearner, X, y, minerr=0.10, minfrq=10/627, classes, gbmModel)
+  
+    selRulesIx = rulesoutput[[1]]
+    resRulesIx = rulesoutput[[2]]
+    
+    # present rules
+    myrules = mypresentRules(selRulesIx[,c(1:5,7)], colnames(X), fnames) 
+    eachtestRules[[allidx+idx]] = myrules
+    
+    if(length(rulesoutput)==3){
+      selRuleswT2Ix = rulesoutput[[3]]
+      # present rules
+      myruleswT2 = mypresentRules(selRuleswT2Ix[,c(1:5,7)], colnames(X), fnames) 
+    }
+    
+    # average error rate of 5 top scoring rules
+    avererrorTop5 = c(avererrorTop5, sum(as.numeric(selRulesIx$err))/nrow(selRulesIx))
+    
+    # recognize whether t2w features are used
+    isT2wtop5 = "T2w" %in% unlist(strsplit(myrules$Ruletype, split = " & ")) 
+    T2wfeatureflag = c(T2wfeatureflag, isT2wtop5)
+    
+    # consider error by rules if less than row.names(p5$best_thr$sensitivity)
+    thresh = as.numeric(row.names(p5$best_thr$sensitivity))
+    probtop5rules = resRulesIx["probModel"] #sum(unlist(selRulesIx$sumtempProb))/nrow(selRulesIx)
+    averprobTop5 = c(averprobTop5, probtop5rules)
+    classTop5 = c(classTop5, ifelse(probtop5rules>=thresh,"C","NC"))
+    
+    ##############
+    ## second analysis
+    rulesoutput2 = mynewapplyLearnerxrules(alearner, X, y, minerr=0.10, minfrq=10/627, classes, gbmModel)
+    topRules = rulesoutput2[[1]]
+    
+    if(length(rulesoutput2)>1){
+      eachtestTopRules[[allidx+idx]] = rulesoutput2[[2]]
+      allseltoprules = rbind(allseltoprules, rulesoutput2[[3]])
+    }else{
+      eachtestTopRules[[allidx+idx]] = list()
+      allseltoprules = rbind(allseltoprules, 1:nrow(topRules)*0)
+    }
+  }
+  
+  # increment accourdingly
+  allidx = allidx+nrow(imgT2pLMSIRtest)
+  # append per fold
+  alltopRules[[k]] = list(info=T1T2testinfo,
+                          data=imgT2pLMSIRtest,
+                          topRules=topRules, 
+                          eachtestTopRules=eachtestTopRules, 
+                          allseltoprules=allseltoprules)
+}
+
+```
+
+## First Analysis of error and rules extracted:
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=8, fig.height=6}
+# 1) summary of all cases top rules
+summary(avererrorTop5)
+summary(avererrorTop5<=0.10)
+as.numeric(summary(avererrorTop5<=0.10)[2:4])/length(avererrorTop5)
+
+## plot the error
+cvstats = cbind(data.frame(avererrorTop5=avererrorTop5),data.frame(T2wfeatureflag=T2wfeatureflag))
+p <- ggplot(cvstats, aes(factor(T2wfeatureflag), avererrorTop5))
+p + geom_boxplot(aes(fill = factor(T2wfeatureflag)))
+summary(subset(cvstats, T2wfeatureflag==FALSE))
+summary(subset(cvstats, T2wfeatureflag==TRUE))
+
+# 2) summary of allcases use of T2w features
+summary(T2wfeatureflag)
+as.numeric(summary(T2wfeatureflag)[2:4])/length(T2wfeatureflag)
+
+# 4) T2w features were among the top 5 scoring rules in XX lesions (\%: XX benign and XX malignant) 
+T2wamongTop5 = allTestinfo[T2wfeatureflag,-c(20)]
+summary(as.factor(T2wamongTop5$lesion_label))
+
+# Top T1w only features were among the top 5 scoring rules in XX lesions (\%: XX benign and XX malignant) 
+T1wamongTop5 = allTestinfo[!T2wfeatureflag,-c(20)]
+summary(as.factor(T1wamongTop5$lesion_label))
+
+# Top 5 rules accuracy
+confusionMatrix(classTop5, allTraininfo$lesion_label)
+
+```
+
+## Second Analysis: Rules extracted by Malignant/benign
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=8, fig.height=6, results='markup'}
+# per fold
+topRulesIDC = c()
+topRulesISDC = c()
+topRulesFA  = c()
+topRulesFI  = c()
+
+for(k in 1:10){  
+  cat(paste0("\n============== Reading cv-fold: ",k," left out cases\n"))
+  info = alltopRules[[k]]$info
+  data = alltopRules[[k]]$data
+  topRules = alltopRules[[k]]$topRules
+  eachtestTopRules = alltopRules[[k]]$eachtestTopRules
+  seltoprules = alltopRules[[k]]$allseltoprules
+  # form feature dictionary
+  fdict = feature_dictionary(imgT2pLMSIRtest)
+  fnames = fdict$fnnames
+  
+  df = data.frame(cbind(seltoprules, info$lesion_id, info$lesion_label, info$lesion_diagnosis))
+  colnames(df) <- c(as.character(1:nrow(topRules)),"lesion_id","lesion_label","lesion_diagnosis")
+  cols = 1:nrow(topRules)    
+  df[,cols] = apply(df[,cols], 2, function(x) as.numeric(x))
+  
+  IDC = subset(df, lesion_diagnosis=="InvasiveDuctal")
+  ISDC = subset(df, lesion_diagnosis=="InsituDuctal")
+  FA = subset(df, lesion_diagnosis=="FIBROADENOMA")
+  FI = subset(df, lesion_diagnosis=="FIBROCYSTIC")
+  
+  cat(paste0("\n============== Top five explaining rules for InvasiveDuctal (IDC): n = ",nrow(IDC)))
+  topIDC = sort(colSums(IDC[,1:nrow(topRules)]), decreasing = TRUE)
+  print(topIDC[1:5])
+  rulesTopIDC = as.numeric(names(topIDC[1:5]))
+  print(mypresentRules(topRules[rulesTopIDC,], colnames(data[,2:ncol(data)]), fnames ))
+  # append
+  topRulesIDC = rbind(topRulesIDC, topRules[rulesTopIDC,])
+  # display a case that meets them all
+  casesIDC = IDC[,c(rulesTopIDC,nrow(topRules)+1,nrow(topRules)+2,nrow(topRules)+3)]
+  idxIDC = sort(rowSums(casesIDC[,1:5]), decreasing = TRUE)[1]
+  print("Top case meeting rules for InvasiveDuctal (IDC):")
+  topcasesIDC = casesIDC[row.names(casesIDC)==names(idxIDC),]
+  print(topcasesIDC)
+
+  cat(paste0("\n============== Top five explaining rules for InsituDuctal (ISDC): n = ",nrow(ISDC)))
+  topISDC = sort(colSums(ISDC[,1:nrow(topRules)]), decreasing = TRUE)
+  print(topISDC[1:5])
+  rulesTopISDC = as.numeric(names(topISDC[1:5]))
+  print(mypresentRules(topRules[rulesTopISDC,], colnames(data[,2:ncol(data)]), fnames ))
+  # append
+  topRulesISDC = rbind(topRulesISDC, topRules[rulesTopISDC,])
+  # display a case that meets them all
+  casesISDC = ISDC[,c(rulesTopISDC,nrow(topRules)+1,nrow(topRules)+2,nrow(topRules)+3)]
+  idxISDC = sort(rowSums(casesISDC[,1:5]), decreasing = TRUE)[1]
+  print("Top case meeting rules for InsituDuctal (ISDC):")
+  topcasesISDC = casesISDC[row.names(casesISDC)==names(idxISDC),]
+  print(topcasesISDC)
+  
+  cat(paste0("\n============== Top five explaining rules for FIBROADENOMA (FA): n = ",nrow(FA)))
+  topFA = sort(colSums(FA[,1:nrow(topRules)]), decreasing = TRUE)
+  print(topFA[1:5])
+  rulesTopFA = as.numeric(names(topFA[1:5]))
+  print(mypresentRules(topRules[rulesTopFA,], colnames(data[,2:ncol(data)]), fnames ))
+  # append
+  topRulesFA = rbind(topRulesFA, topRules[rulesTopFA,])
+  # display a case that meets them all
+  casesFA= FA[,c(rulesTopFA,nrow(topRules)+1,nrow(topRules)+2,nrow(topRules)+3)]
+  idxFA = sort(rowSums(casesFA[,1:5]), decreasing = TRUE)[1]
+  print("Top case meeting rules for FIBROADENOMA (FA):")
+  topcasesFA = casesFA[row.names(casesFA)==names(idxFA),]
+  print(topcasesFA)
+  
+  cat(paste0("\n============== Top five explaining rules for FIBROCYSTIC (FI): n = ",nrow(FI)))
+  topFI = sort(colSums(FI[,1:nrow(topRules)]), decreasing = TRUE)
+  print(topFI[1:5])
+  rulesTopFI = as.numeric(names(topFI[1:5]))
+  print(mypresentRules(topRules[rulesTopFI,], colnames(data[,2:ncol(data)]), fnames ))
+  # append
+  topRulesFI = rbind(topRulesFI, topRules[rulesTopFI,])
+  # display a case that meets them all
+  casesFI= FI[,c(rulesTopFI,nrow(topRules)+1,nrow(topRules)+2,nrow(topRules)+3)]
+  print(casesFI)
+  idxFI = sort(rowSums(casesFI[,1:5]), decreasing = TRUE)[1]
+  print("Top case meeting rules for FIBROCYSTIC (FI):")
+  topcasesFI = casesFI[row.names(casesFI)==names(idxFI),]
+  print(topcasesFI)
+  
+  cat(paste0("\n============== Done cv-fold: ",k," ==============\n"))
+
+}
+
+```
+
+  
+  
+```{r}
+# save current state k patient out
+save.image("Outputs/allcvRules_noT2SIpredLMSIR_boost_addeddiagvalue.RData")
+ 
+```

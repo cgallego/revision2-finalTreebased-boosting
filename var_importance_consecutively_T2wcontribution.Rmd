@@ -1,0 +1,807 @@
+---
+title: "Analysis of variable importance consecutively - T2SI vs predLMSIR"
+author: "Cristina Gallego"
+date: "August 25, 2017"
+output: 
+  html_document: 
+    fig_caption: yes
+    fig_width: 6
+    keep_md: yes
+    theme: cerulean
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, verbose = TRUE, warning=FALSE, message=FALSE, comment="")
+
+options(width = 100)
+setwd("Z:/Cristina/Section2/revision-finalTreebased-boosting")
+library(R.utils)
+library(caret)
+require(ggplot2)
+library("RSQLite")
+library(pROC)
+library("Boruta")
+require(data.table)
+library(rpart)
+library(rpart.plot)
+library(R.utils)
+require(ggplot2)
+library(plyr)
+library(pander)
+
+source("functions.R")
+source("functionsModels.R")
+```
+
+# Analysis of results by each fold
+```{r process-cvks}
+allcvauc_imgT1= c()
+allcvauc_T1wT2w = c()
+allcvauc_T2wpLMSIR= c()
+
+## using 3Dtexture first + Boosting  
+perfall_imgT1 = data.frame() 
+perfall_imgT1T2 = data.frame() 
+perfall_T2wpLMSIR = data.frame() 
+
+varImpall_imgT1w = data.frame() 
+varImpall_T1wT2w = data.frame() 
+varImpall_T2wpLMSIR = data.frame() 
+
+# perform k-fold-out
+k=1 # for(k in 1:10){  # 1:10f cv
+load(paste0("Outputs/T1T2imgvsT2wtextpredLMSIR_boost_addeddiagvalue_cv",k,".RData"))
+
+################### ################### process varImpts treedata_imgT1
+# with dictionary assign type of feature
+dictimgT1 = feature_dictionary(imgT1train)
+ntrees_imgT1 = length(treedata_imgT1$forest$trees)
+# to hold all values
+indvTree_imhT1_mat = matrix(, nrow = ntrees_imgT1, ncol = length(dictimgT1$fnnames$f))
+indvTree_imhT1=data.frame(indvTree_imhT1_mat)
+colnames(indvTree_imhT1) <- dictimgT1$fnnames$f
+# to hold by type
+typespertree_mat = matrix(, nrow = ntrees_imgT1, ncol = length(unique(dictimgT1$fnnames$type)))
+typespertree = data.frame(typespertree_mat)
+colnames(typespertree) <- unique(dictimgT1$fnnames$type)
+# to hold barplots
+
+df_sumvartypes = data.frame()
+for(t in 1:ntrees_imgT1){
+  atreetotal = sum(treedata_imgT1$forest$trees[t][[1]]$variable.importance) 
+  atreeVarImp = (treedata_imgT1$forest$trees[t][[1]]$variable.importance/atreetotal)*100
+  indvTree_imhT1[t,c(names(atreeVarImp))] = atreeVarImp
+
+  vartypes = data.frame()
+  for(i in 1:length(atreeVarImp)){
+    #print(atreeVarImp[i])
+    dvar = names(atreeVarImp[i])
+    vartypes = rbind(vartypes, 
+                     c(dictimgT1$fnnames[dictimgT1$fnnames$f == dvar,]$type[1],                         atreeVarImp[i]), stringsAsFactors = FALSE)
+  }
+  colnames(vartypes) <- c("type","varImp")
+  vartypes=transform(vartypes, varImp = as.numeric(varImp))
+  # slice and sum
+  sumvartypes = vartypes %>%
+                  group_by(type) %>%
+                  summarise(sumvar = sum(varImp)) %>%
+                  arrange(sumvar)
+  
+  # append
+  typespertree[t,sumvartypes$type] = sumvartypes$sumvar
+  sumvartypes$ntree = t
+  df_sumvartypes = rbind(df_sumvartypes, sumvartypes)
+}
+
+################### plot cummulative distributions
+plt_cumsum = data.frame()
+for(col in names(typespertree)){
+print(col)
+histogv = density(na.omit(typespertree[,c(col)]))
+plt_cumsum = rbind(plt_cumsum, cbind(xden=histogv$x, yden=cumsum(histogv$y), cat=col), stringsAsFactors = FALSE)
+}
+# format
+plt_cumsum=transform(plt_cumsum, cat=as.character(cat), xden=as.numeric(xden), yden=as.numeric(yden))
+# [plot by cumsum stacked bars]
+ggplot(data=plt_cumsum, aes(x=xden, y=yden)) + geom_point(aes(colour=cat))
+# [plot by categories stacked bars]
+stacked_bytreevar <- ggplot() + geom_bar(aes(y = sumvar, x = ntree, fill = type), data = df_sumvartypes,
+                           stat="identity")
+  
+
+################### ################### process varImpts treedata_imgT1T2
+# with dictionary assign type of feature
+dictimgT1T2 = feature_dictionary(imgT1T2)
+ntrees_imgT1T2 = length(treedata_imgT1T2$forest$trees)
+# to hold all values
+indvTree_imhT1T2_mat = matrix(, nrow = ntrees_imgT1, ncol = length(dictimgT1T2$fnnames$f))
+indvTree_imhT1T2=data.frame(indvTree_imhT1T2_mat)
+colnames(indvTree_imhT1T2) <- dictimgT1T2$fnnames$f
+# to hold by type
+typespertree_mat = matrix(, nrow = ntrees_imgT1T2, ncol = length(unique(dictimgT1T2$fnnames$type)))
+typespertree = data.frame(typespertree_mat)
+colnames(typespertree) <- unique(dictimgT1T2$fnnames$type)
+# to hold barplots
+
+df_sumvartypes = data.frame()
+df_T1vsT2contribsumvartypes = data.frame()
+for(t in 1:ntrees_imgT1T2){
+  # get varImpt per tree
+  atreetotal = sum(treedata_imgT1T2$forest$trees[t][[1]]$variable.importance) 
+  # normalize varImpt so that per tree sum to 100% importance
+  atreeVarImp = (treedata_imgT1T2$forest$trees[t][[1]]$variable.importance/atreetotal)*100
+  # append to varImp matrix
+  indvTree_imhT1T2[t,c(names(atreeVarImp))] = atreeVarImp
+  
+  # categorized varImpt as T1w/T2w
+  vartypes = data.frame()
+  for(i in 1:length(atreeVarImp)){
+      #print(atreeVarImp[i])
+      dvar = names(atreeVarImp[i])
+      vartypes = rbind(vartypes, 
+                       c(dictimgT1T2$fnnames[dictimgT1T2$fnnames$f == dvar,]$type[1],                         atreeVarImp[i]), stringsAsFactors = FALSE)
+  }
+  colnames(vartypes) <- c("type","varImp")
+  vartypes=transform(vartypes, varImp = as.numeric(varImp))
+  # slice and sum importances per category T1w/T2w
+  sumvartypes = vartypes %>%
+                  group_by(type) %>%
+                  summarise(sumvar = sum(varImp)) %>%
+                  arrange(sumvar)
+  
+  # append for all itree
+  typespertree[t,sumvartypes$type] = sumvartypes$sumvar
+  
+  # higher hirechical category T1w vs. T2w
+  T1vsT2contrib = c()
+  for(t1vst2cat in sumvartypes$type){
+    if(Vectorize(grepl, USE.NAMES = FALSE)("T1w",t1vst2cat)){
+      T1vsT2contrib = c(T1vsT2contrib, "T1w")
+    }
+    if(Vectorize(grepl, USE.NAMES = FALSE)("T2w",t1vst2cat)){
+      T1vsT2contrib = c(T1vsT2contrib, "T2w")
+    }
+    if(Vectorize(grepl, USE.NAMES = FALSE)("dispersion",t1vst2cat)){
+      T1vsT2contrib = c(T1vsT2contrib, "dispersion")
+    }
+    if(Vectorize(grepl, USE.NAMES = FALSE)("single-time-Enh",t1vst2cat)){
+      T1vsT2contrib = c(T1vsT2contrib, "T1w")
+    }
+  }
+  # add variable T1vsT2contrib
+  sumvartypes$T1vsT2contrib = T1vsT2contrib
+  # add variable ntree
+  sumvartypes$ntree = t
+  
+  T1vsT2contribsumvartypes = sumvartypes %>%
+        group_by(T1vsT2contrib)%>%
+        summarise(sumvar = sum(sumvar))
+  # add variable ntree
+  T1vsT2contribsumvartypes$ntree = t
+  
+  # finally append to total df
+  df_sumvartypes = rbind(df_sumvartypes, sumvartypes)
+  df_T1vsT2contribsumvartypes = rbind(df_T1vsT2contribsumvartypes, T1vsT2contribsumvartypes)
+}
+
+################### plot cummulative distributions
+plt_cumsum = data.frame()
+for(col in names(typespertree)){
+print(col)
+histogv = density(na.omit(typespertree[,c(col)]))
+plt_cumsum = rbind(plt_cumsum, cbind(xden=histogv$x, yden=cumsum(histogv$y), cat=col), stringsAsFactors = FALSE)
+}
+# format
+plt_cumsum=transform(plt_cumsum, cat=as.character(cat), xden=as.numeric(xden), yden=as.numeric(yden))
+# [plot by cumsum stacked bars]
+ggplot(data=plt_cumsum, aes(x=xden, y=yden)) + geom_point(aes(colour=cat))
+
+# [plot by average T1w stacked bars]
+# slice and sum
+sumT1vsT2contrib = df_sumvartypes %>%
+                group_by(T1vsT2contrib) %>%
+                summarise(sumvar = sum(sumvar)) %>%
+                separate(ntree)
+
+ggplot(data=df_T1vsT2contribsumvartypes, aes(x=ntree, y=sumvar)) + geom_line(aes(colour=T1vsT2contrib))
+
+# [plot by categories stacked bars]
+stacked_bytreevar <- ggplot() + geom_bar(aes(y = sumvar, x = ntree, fill = T1vsT2contrib), data = df_T1vsT2contribsumvartypes,
+                           stat="identity")  
+stacked_bytreevar
+
+
+
+################### ################### process varImpts treedata_T2wpLMSIR
+# with dictionary assign type of feature
+dictimgimgT2pLMSIR = feature_dictionary(imgT2pLMSIR)
+ntrees_imgT2pLMSIR = length(treedata_T2wpLMSIR$forest$trees)
+# to hold all values
+indvTree_imhT2pLMSIR_mat = matrix(, nrow = ntrees_imgT2pLMSIR, ncol = length(dictimgimgT2pLMSIR$fnnames$f))
+indvTree_imhT2pLMSIR=data.frame(indvTree_imhT2pLMSIR_mat)
+colnames(indvTree_imhT2pLMSIR) <- dictimgimgT2pLMSIR$fnnames$f
+# to hold by type
+unique_vars = c(unique(dictimgimgT2pLMSIR$fnnames$type)[1:5], "T2wText", "predLMSIR")
+typespertree_mat = matrix(, nrow = ntrees_imgT2pLMSIR, ncol = length(unique_vars))
+typespertree = data.frame(typespertree_mat)
+colnames(typespertree) <- unique_vars
+# to hold barplots
+
+df_sumvartypes = data.frame()
+df_T1vsT2contribsumvartypes = data.frame()
+for(t in 1:ntrees_imgT2pLMSIR){
+  # get varImpt per tree
+  atreetotal = sum(treedata_T2wpLMSIR$forest$trees[t][[1]]$variable.importance) 
+  # normalize varImpt so that per tree sum to 100% importance
+  atreeVarImp = (treedata_T2wpLMSIR$forest$trees[t][[1]]$variable.importance/atreetotal)*100
+  # append to varImp matrix
+  indvTree_imhT2pLMSIR[t,c(names(atreeVarImp))] = atreeVarImp
+  
+  # categorized varImpt as T1w/T2w
+  vartypes = data.frame()
+  for(i in 1:length(atreeVarImp)){
+      #print(atreeVarImp[i])
+      dvar = names(atreeVarImp[i])
+      vartypes = rbind(vartypes, 
+                       c(dictimgimgT2pLMSIR$fnnames[dictimgimgT2pLMSIR$fnnames$f == dvar,]$type[1],    
+                       dictimgimgT2pLMSIR$fnnames[dictimgimgT2pLMSIR$fnnames$f == dvar,]$nname[1],
+                       atreeVarImp[i]), stringsAsFactors = FALSE)
+  }
+  colnames(vartypes) <- c("type","nname","varImp")
+  vartypes=transform(vartypes, varImp = as.numeric(varImp))
+  
+  
+  ### be more specific about selected T2w features
+  if( sum(Vectorize(grepl, USE.NAMES = FALSE)("T2w",vartypes$type))>0 ){
+    vartypes$type[Vectorize(grepl, USE.NAMES = FALSE)("T2w",vartypes$type)] = vartypes$nname[Vectorize(grepl, USE.NAMES = FALSE)("T2w",vartypes$type)] 
+  }
+  
+  # slice and sum importances per category T1w/T2w
+  sumvartypes = vartypes %>%
+                  group_by(type) %>%
+                  summarise(sumvar = sum(varImp)) %>%
+                  arrange(sumvar)
+  
+  for(kvar in 1:length(sumvartypes$type)){
+    t1vst2cat = sumvartypes$type[kvar]
+    # deal with 2 types of T2w features: T2wTexture and LMSIR pred
+    if(Vectorize(grepl, USE.NAMES = FALSE)("T2w",t1vst2cat)){
+      sumvartypes$type[kvar] = "T2wText"
+    }
+    if(Vectorize(grepl, USE.NAMES = FALSE)("LMSIR",t1vst2cat)){
+      sumvartypes$type[kvar] = "predLMSIR"
+    }
+  }
+  
+  # slice and sum importances per category T1w/T2w
+  sumvartypes = sumvartypes %>%
+                  group_by(type) %>%
+                  summarise(sumvar = sum(sumvar)) %>%
+                  arrange(sumvar)
+  
+  # append for all itree
+  typespertree[t,sumvartypes$type] = sumvartypes$sumvar
+  
+  
+  ## higher hirechical category T1w vs. T2w
+  T1vsT2contrib = c()
+  for(t1vst2cat in sumvartypes$type){
+    # deal with 2 types of T2w features: T2wTexture and LMSIR pred
+    if(Vectorize(grepl, USE.NAMES = FALSE)("T2w",t1vst2cat)){
+      T1vsT2contrib = c(T1vsT2contrib, "T2wText")
+    }
+    if(Vectorize(grepl, USE.NAMES = FALSE)("LMSIR",t1vst2cat)){
+      T1vsT2contrib = c(T1vsT2contrib, "predLMSIR")
+    }
+    # deal with types of T1w features:
+    if(Vectorize(grepl, USE.NAMES = FALSE)("T1w",t1vst2cat)){
+      T1vsT2contrib = c(T1vsT2contrib, "T1w")
+    }
+    if(Vectorize(grepl, USE.NAMES = FALSE)("dispersion",t1vst2cat)){
+      T1vsT2contrib = c(T1vsT2contrib, "T1w")
+    }
+    if(Vectorize(grepl, USE.NAMES = FALSE)("single-time-Enh",t1vst2cat)){
+      T1vsT2contrib = c(T1vsT2contrib, "T1w")
+    }
+  }
+    
+  
+  # add variable T1vsT2contrib
+  sumvartypes$T1vsT2contrib = T1vsT2contrib
+  # add variable ntree
+  sumvartypes$ntree = t
+  
+  T1vsT2contribsumvartypes = sumvartypes %>%
+        group_by(T1vsT2contrib)%>%
+        summarise(sumvar = sum(sumvar))
+  # add variable ntree
+  T1vsT2contribsumvartypes$ntree = t
+  
+  # finally append to total df
+  df_sumvartypes = rbind(df_sumvartypes, sumvartypes)
+  df_T1vsT2contribsumvartypes = rbind(df_T1vsT2contribsumvartypes, T1vsT2contribsumvartypes)
+}
+
+
+
+
+
+################### plot cummulative distributions
+plt_cumsum = data.frame()
+for(col in names(typespertree)){
+print(col)
+histogv = density(na.omit(typespertree[,c(col)]))
+plt_cumsum = rbind(plt_cumsum, cbind(xden=histogv$x, yden=cumsum(histogv$y), cat=col), stringsAsFactors = FALSE)
+}
+# format
+plt_cumsum=transform(plt_cumsum, cat=as.character(cat), xden=as.numeric(xden), yden=as.numeric(yden))
+# [plot by cumsum stacked bars]
+ggplot(data=plt_cumsum, aes(x=xden, y=yden)) + geom_point(aes(colour=cat))
+
+# [plot by average T1w stacked bars]
+# slice and sum
+sumT1vsT2contrib = df_sumvartypes %>%
+                group_by(T1vsT2contrib) %>%
+                summarise(sumvar = sum(sumvar)) %>%
+                separate(ntree)
+
+ggplot(data=df_T1vsT2contribsumvartypes, aes(x=ntree, y=sumvar)) + geom_line(aes(colour=T1vsT2contrib))
+
+# [plot by categories stacked bars]
+stacked_bytreevar <- ggplot() + geom_bar(aes(y = sumvar, x = ntree, fill = T1vsT2contrib), data = df_T1vsT2contribsumvartypes,
+                           stat="identity")  
+stacked_bytreevar 
+  
+  
+
+
+
+```
+
+# Combine, pool data, and plot final results
+```{r Summarize}
+print(summary(allcvauc_imgT1))
+print(summary(allcvauc_T1wT2w))
+print(summary(allcvauc_T2wpLMSIR))
+
+# boxplots of cv-performances
+cvperfs = data.frame()
+cvperfs = rbind(cvperfs, data.frame(cvAUC=allcvauc_imgT1, group="T1w"))
+cvperfs = rbind(cvperfs, data.frame(cvAUC=allcvauc_T1wT2w, group="T1w+T2w_SI"))
+cvperfs = rbind(cvperfs, data.frame(cvAUC=allcvauc_T2wpLMSIR, group="T1w+T2wSI_predictiveLMSIR"))
+# find min
+minAUC = min(cvperfs$cvAUC)
+
+# plot
+p <- ggplot(cvperfs, aes(factor(group), cvAUC))
+p + geom_boxplot(aes(fill = factor(group)))
+
+
+########### 
+# plot pooled all cv-heldout test cases
+par(mfrow=c(1,1))
+n=15
+colors = rainbow(n, s = 1, v = 1, start = 0, end = max(1, n - 1)/n, alpha = 1)
+# plot 1/4
+p1 = calcAUC_plot(perfall_imgT1$obs, perfall_imgT1$C, 
+                           xptext=0.45, yptext=0.75 , 1, colors[2], atitle="")
+par(new=TRUE)
+p2 = calcAUC_plot(perfall_imgT1T2$obs, perfall_imgT1T2$C, 
+                           xptext=0.55, yptext=0.65, 2, colors[9], atitle="")
+par(new=TRUE)
+p3 = calcAUC_plot(perfall_T2wpLMSIR$obs, perfall_T2wpLMSIR$C,
+                           xptext=0.65, yptext=0.55, 3, colors[11], 
+                  atitle="ROCs pooled heldout-patient across ALL folds")
+
+legend("bottomright", 
+       legend = c(paste0("T1w"),
+                    paste0("T1w+T2w_SI"),
+                    paste0("T1w+T2wSI_predictiveLMSIR")),
+       col = c(colors[2],colors[9],colors[11]), lty=c(1,2,3), lwd = 2)
+
+
+# find significants: only imgT1 vs. allT2
+roc.test(p1$ROC, p3$ROC, method=c("bootstrap"), alternative = c("less"), boot.stratified=TRUE)
+# find significants: imgT1 vs wLMSIR
+roc.test(p2$ROC, p3$ROC, method=c("bootstrap"), alternative = c("two.sided"), boot.stratified=TRUE)
+
+```
+ 
+# Analysis of the frequency of boosted trees used features
+```{r featuressel, fig.height=24}
+source("functions.R")
+source("functionsModels.R")
+
+# plot features imgT1featsel wimgT2featsel wLMSIRfeatsel
+## group with all of the features spaces combined, most contributing T2w feature
+# pick frequency of 75% or higher as very common feature
+dfimgT1 = data.frame(table(varImpall_imgT1w$selfeat))
+dfimgT1$high = (dfimgT1$Freq>=0.75*max(varImpall_imgT1w$kfcv))*1
+dfimgT1 = dfimgT1[order(dfimgT1$Freq, decreasing = TRUE),]
+
+# prune only max frequencies, remove lesser frequencies
+# with dictionary assign type of feature
+dictimgT1 = feature_dictionary(imgT1train)
+dfreqimgT1 = data.frame()
+freqf = c()
+for(di in 1:nrow(dfimgT1)){
+  featname = as.character(dfimgT1[di,"Var1"])
+  if(!(featname %in% freqf)){
+    freqf = c(freqf, featname)
+    dfreqimgT1 = rbind(dfreqimgT1, cbind(dfimgT1[di,],
+                       typefeature=dictimgT1$fnnames[dictimgT1$fnnames$f==featname,"type"][1]))}}
+print(dfreqimgT1)
+  
+
+#plot
+ggplot(dfreqimgT1[dfreqimgT1$high==1,], aes(x=reorder(Var1, order(Freq, decreasing = TRUE)), y=Freq, fill=factor(typefeature))) + 
+  geom_bar(stat = "identity") + coord_flip() +
+  ggtitle("T1wonly ensembles: feature selection frequency") +
+  labs(y="featsel frequency", x=" ") +
+  theme(plot.title = element_text(family = "Trebuchet MS", color="#666666", face="bold", size=18, hjust=0))+
+  theme(axis.title = element_text(family = "Trebuchet MS", color="#666666", face="bold", size=16))
+
+## varImpall_T2wmLMSIR ########### 
+# pick frequency of 75% or higher as very common feature
+dfallT2 = data.frame(table(varImpall_T2wmLMSIR$selfeat))
+dfallT2$high = (dfallT2$Freq>=0.75*max(varImpall_T2wmLMSIR$kfcv))*1
+dfallT2 = dfallT2[order(dfallT2$Freq, decreasing = TRUE),]
+print(dfallT2)
+
+# prune only max frequencies, remove lesser frequencies
+# with dictionary assign type of feature
+dictimgT2 = feature_dictionary(imgT2mLMSIR)
+dfreqimgT2 = data.frame()
+freqf = c()
+for(di in 1:nrow(dfallT2)){
+  featname = as.character(dfallT2[di,"Var1"])
+  if(!(featname %in% freqf)){
+    freqf = c(freqf, featname)
+    dfreqimgT2 = rbind(dfreqimgT2, cbind(dfallT2[di,],
+                       typefeature=dictimgT2$fnnames[dictimgT2$fnnames$f==featname,"type"][1]))}}
+print(dfreqimgT2)
+
+#plot
+ggplot(dfreqimgT2, aes(x=reorder(Var1, order(Freq, decreasing = TRUE)), y=Freq, fill=factor(typefeature))) + 
+  geom_bar(stat = "identity") + coord_flip() +
+  ggtitle("T1wonly ensembles: feature selection frequency") +
+  labs(y="featsel frequency", x=" ") +
+  theme(plot.title = element_text(family = "Trebuchet MS", color="#666666", face="bold", size=18, hjust=0))+
+  theme(axis.title = element_text(family = "Trebuchet MS", color="#666666", face="bold", size=16))
+
+
+
+## varImpall_T2wpLMSIR ########### 
+# pick frequency of 75% or higher as very common feature
+dfwT1T2 = data.frame(table(varImpall_T2wpLMSIR$selfeat))
+dfwT1T2$high = (dfwT1T2$Freq>=0.75*max(varImpall_T2wpLMSIR$kfcv))*1
+dfwT1T2 = dfwT1T2[order(dfwT1T2$Freq, decreasing = TRUE),]
+print(dfwT1T2)
+
+# prune only max frequencies, remove lesser frequencies
+# with dictionary assign type of feature
+dictimgT1T2 = feature_dictionary(imgT2pLMSIR)
+dfreqimgT1T2 = data.frame()
+freqf = c()
+for(di in 1:nrow(dfwT1T2)){
+  featname = as.character(dfwT1T2[di,"Var1"])
+  if(!(featname %in% freqf)){
+    freqf = c(freqf, featname)
+    dfreqimgT1T2 = rbind(dfreqimgT1T2, cbind(dfwT1T2[di,],
+                       typefeature=dictimgT1T2$fnnames[dictimgT1T2$fnnames$f==featname,"type"][1]))}
+  }
+print(dfreqimgT1T2)
+
+#plot
+ggplot(dfreqimgT1T2[dfreqimgT1T2$high==1,], aes(x=reorder(Var1, order(Freq, decreasing = TRUE)), y=Freq, fill=factor(typefeature))) + 
+  geom_bar(stat = "identity") + coord_flip() +
+  ggtitle("T1w+T2wSI_noLMSIR ensembles: feature selection frequency") +
+  labs(y="featsel frequency", x=" ") +
+  theme(plot.title = element_text(family = "Trebuchet MS", color="#666666", face="bold", size=18, hjust=0))+
+  theme(axis.title = element_text(family = "Trebuchet MS", color="#666666", face="bold", size=16))
+
+```
+
+
+# now based on frequency of selecting a feature
+```{r frequency-graphs}
+# pick frequency of 75% or higher as very common feature
+dfimgT1 = data.frame(table(varImpall_imgT1w$selfeat))
+dfimgT1$high = (dfimgT1$Freq>=0.75*10)*3 + 
+               (dfimgT1$Freq>=0.5*10 & dfimgT1$Freq<0.75*10)*2 + 
+               (dfimgT1$Freq<0.5*10)*1
+dfimgT1 = dfimgT1[order(dfimgT1$Freq, decreasing = TRUE),]
+
+# with dictionary assign type of feature
+dictimgT1 = feature_dictionary(imgT1train)
+dfreqimgT1 = data.frame()
+freqf = c()
+for(di in 1:nrow(dfimgT1)){
+  featname = as.character(dfimgT1[di,"Var1"])
+  if(!(featname %in% freqf)){
+    freqf = c(freqf, featname)
+    dfreqimgT1 = rbind(dfreqimgT1, cbind(dfimgT1[di,],
+                       typefeature=dictimgT1$fnnames[dictimgT1$fnnames$f==featname,"type"][1]))}}
+
+T1w75orh =  dfreqimgT1[dfreqimgT1$high==3,]
+T1w50to75 =  dfreqimgT1[dfreqimgT1$high==2,]
+T1w25to50 =  dfreqimgT1[dfreqimgT1$high==1,]
+
+# plot 2
+# select freuqutnly selected features
+maxFreq_dictT1w = summary(as.factor(dictimgT1$fnnames$type))
+pander(maxFreq_dictT1w)
+
+T1w75orhF = data.frame(featureGroup = names(summary(T1w75orh$typefeature)),
+           freq = summary(T1w75orh$typefeature))
+rownames(T1w75orhF)=NULL
+T1w75orhF$flagSel = ">75%"
+T1w50to75F = data.frame(featureGroup = names(summary(T1w50to75$typefeature)),
+           freq = summary(T1w50to75$typefeature))
+rownames(T1w50to75F)=NULL
+T1w50to75F$flagSel = "50-75%"
+T1w25to50F = data.frame(featureGroup = names(summary(T1w25to50$typefeature)),
+           freq = summary(T1w25to50$typefeature))
+rownames(T1w25to50F)=NULL
+T1w25to50F$flagSel = "<50%"
+
+allT1wFfreq = rbind(T1w75orhF, T1w50to75F, T1w25to50F)
+
+maxFf= c()
+for(i in 1:nrow(allT1wFfreq)){
+  Ff = unname(maxFreq_dictT1w[names(maxFreq_dictT1w) == allT1wFfreq$featureGroup[i]])
+  maxFf = c(maxFf, Ff)
+}
+allT1wFfreq$classifier = "T1wonly"
+
+#plot +scale_fill_manual(values=c(p1,p2))
+#p1<- barplot(1, angle = 45, density = 10, col = "black")
+#p2<- barplot(1, angle = 145, density = 10, col = "grey")
+
+# Get the positions of the labels
+allT1wFfreq = ddply(allT1wFfreq, .(featureGroup), transform, pos = cumsum(freq) - 0.5*freq) 
+
+labelsT1 = allT1wFfreq$freq
+labelsT1[labelsT1==0]=""
+allT1wFfreq$labels = labelsT1
+
+ggplot(allT1wFfreq, aes(x=featureGroup, y=freq, fill=flagSel)) + 
+  geom_bar(stat = "identity") + coord_flip()   +
+  geom_text(aes(label = labels, y = pos), size = 3) +
+  scale_fill_discrete(guide = guide_legend(title = "cv Selection\nfrequency")) +
+  ggtitle("only T1w featsel") +
+  labs(y="# features selected", x=" ") 
+
+
+###########################################
+# pick frequency of 75% or higher as very common feature
+dfimgT1T2 = data.frame(table(varImpall_T2wpLMSIR$selfeat))
+dfimgT1T2$high = (dfimgT1T2$Freq>=0.75*10)*3 + 
+               (dfimgT1T2$Freq>=0.5*10 & dfimgT1T2$Freq<0.75*10)*2 + 
+               (dfimgT1T2$Freq<0.5*10)*1
+dfimgT1T2 = dfimgT1T2[order(dfimgT1T2$Freq, decreasing = TRUE),]
+
+# with dictionary assign type of feature
+dictimgT1T2 = feature_dictionary(imgT2pLMSIR)
+dfreqimgT1T2 = data.frame()
+freqf = c()
+for(di in 1:nrow(dfimgT1T2)){
+  featname = as.character(dfimgT1T2[di,"Var1"])
+  if(!(featname %in% freqf)){
+    freqf = c(freqf, featname)
+    dfreqimgT1T2 = rbind(dfreqimgT1T2, cbind(dfimgT1T2[di,],
+                       typefeature=dictimgT1T2$fnnames[dictimgT1T2$fnnames$f==featname,"type"][1]))}
+  }
+
+T1T2w75orh =  dfreqimgT1T2[dfreqimgT1T2$high==3,]
+T1T2w50to75 =  dfreqimgT1T2[dfreqimgT1T2$high==2,]
+T1T2w25to50 =  dfreqimgT1T2[dfreqimgT1T2$high==1,]
+
+# plot 2
+# select freuqutnly selected features
+maxFreq_dictT1T2 = summary(as.factor(dictimgT1T2$fnnames$type))
+pander(maxFreq_dictT1T2)
+
+T1T2w75orhF = data.frame(featureGroup = names(summary(T1T2w75orh$typefeature)),
+           freq = summary(T1T2w75orh$typefeature))
+rownames(T1T2w75orhF)=NULL
+T1T2w75orhF$flagSel = ">75%"
+T1T2w50to75F = data.frame(featureGroup = names(summary(T1T2w50to75$typefeature)),
+           freq = summary(T1T2w50to75$typefeature))
+rownames(T1T2w50to75F)=NULL
+T1T2w50to75F$flagSel = "50-75%"
+T1T2w25to50F = data.frame(featureGroup = names(summary(T1T2w25to50$typefeature)),
+           freq = summary(T1T2w25to50$typefeature))
+rownames(T1T2w25to50F)=NULL
+T1T2w25to50F$flagSel = "<50%"
+
+allT1T2wFfreq = rbind(T1T2w75orhF, T1T2w50to75F, T1T2w25to50F)
+
+
+maxFf= c()
+for(i in 1:nrow(allT1T2wFfreq)){
+  Ff = unname(maxFreq_dictT1T2[names(maxFreq_dictT1T2) == allT1T2wFfreq$featureGroup[i]])
+  maxFf = c(maxFf, Ff)
+}
+allT1T2wFfreq$classifier = "T1w+T2w"
+
+# finally plot
+# Get the positions of the labels
+allT1T2wFfreq = ddply(allT1T2wFfreq, .(featureGroup), transform, pos = cumsum(freq) - 0.5*freq)      
+
+labels = allT1T2wFfreq$freq
+labels[labels==0]=""
+allT1T2wFfreq$labels = labels
+
+ggplot(allT1T2wFfreq, aes(x=featureGroup, y=freq, fill=flagSel)) + 
+  geom_bar(stat = "identity") + coord_flip()   +
+  geom_text(aes(label = labels, y = pos), size = 3) +
+  scale_fill_discrete(guide = guide_legend(title = "cv Selection\nfrequency")) +
+  ggtitle("T1w +T2w_predicted LMSIR featsel") +
+  labs(y="# features selected", x=" ") 
+
+
+# plot combingin
+allT1T2highF = rbind(allT1wFfreq, allT1T2wFfreq)
+# plot
+labelsT1T2 = allT1T2highF$freq
+labelsT1T2[labelsT1T2==0]=""
+allT1T2highF$labels = labelsT1T2
+
+ggplot(allT1T2highF, aes(x=featureGroup, y=freq, fill=flagSel)) + 
+  geom_bar(stat = "identity") + coord_flip()  +
+  geom_text(aes(label = labels, y = pos), size = 3) +
+  scale_fill_discrete(guide = guide_legend(title = "cv Selection\nfrequency")) +
+  labs(y="# features selected", x=" ") + facet_grid(. ~ classifier)
+
+#plot +scale_fill_manual(values=c(p1,p2))
+#p1<- barplot(1, angle = 45, density = 10, col = "black")
+#p2<- barplot(1, angle = 145, density = 10, col = "grey")
+
+```
+
+## Within relevant T2w features
+```{r T2featsel}
+# pick frequency of 75% or higher as very common feature
+dfimgT2 = data.frame(table(varImpall_T2wpLMSIR$selfeat))
+dfimgT2$high = (dfimgT2$Freq>=0.75*10)*3 + 
+               (dfimgT2$Freq>=0.5*10 & dfimgT2$Freq<0.75*10)*2 + 
+               (dfimgT2$Freq<0.5*10)*1
+dfimgT2 = dfimgT2[order(dfimgT2$Freq, decreasing = TRUE),]
+
+# with dictionary assign type of feature
+dictimgT2 = feature_dictionary_typesT2(imgT2pLMSIR)
+dfreqimgT2 = data.frame()
+freqf = c()
+for(di in 1:nrow(dfimgT2)){
+  featname = as.character(dfimgT2[di,"Var1"])
+  if(!(featname %in% freqf)){
+    freqf = c(freqf, featname)
+    if(any(dictimgT2$fnnames$f==featname)){
+        dfreqimgT2 = rbind(dfreqimgT2, cbind(dfimgT2[di,],
+                          typefeature=dictimgT2$fnnames[dictimgT2$fnnames$f==featname,"type"][1]))}}}
+
+# only for selected T2w features
+T2w75orh =  dfreqimgT2[dfreqimgT2$high==3,]
+T2w50to75 =  dfreqimgT2[dfreqimgT2$high==2,]
+T2w25to50 =  dfreqimgT2[dfreqimgT2$high==1,]
+
+# plot 2
+# select freuqutnly selected features
+maxFreq_dictT2 = summary(as.factor(dictimgT2$fnnames$type))
+pander(maxFreq_dictT2)
+
+T2w75orhF = data.frame(featureGroup = names(summary(T2w75orh$typefeature)),
+           freq = summary(T2w75orh$typefeature))
+rownames(T2w75orhF)=NULL
+T2w75orhF$flagSel = ">75%"
+T2w50to75F = data.frame(featureGroup = names(summary(T2w50to75$typefeature)),
+           freq = summary(T2w50to75$typefeature))
+rownames(T2w50to75F)=NULL
+T2w50to75F$flagSel = "50-75%"
+T2w25to50F = data.frame(featureGroup = names(summary(T2w25to50$typefeature)),
+           freq = summary(T2w25to50$typefeature))
+rownames(T2w25to50F)=NULL
+T2w25to50F$flagSel = "<50%"
+
+allT2wFfreqpredicted = rbind(T2w75orhF, T2w50to75F, T2w25to50F)
+
+
+maxFf= c()
+for(i in 1:nrow(allT2wFfreqpredicted)){
+  Ff = unname(maxFreq_dictT2[names(maxFreq_dictT2) == allT2wFfreqpredicted$featureGroup[i]])
+  maxFf = c(maxFf, Ff)
+}
+allT2wFfreqpredicted$classifier = "selectedT2w"
+
+# finally plot
+# Get the positions of the labels
+allT2wFfreqpredicted = ddply(allT2wFfreqpredicted, .(featureGroup), transform, pos = cumsum(freq) - 0.5*freq)
+
+labelsT2 = allT2wFfreqpredicted$freq
+labelsT2[labelsT2==0]=""
+allT2wFfreqpredicted$labels = labelsT2
+
+ggplot(allT2wFfreqpredicted, aes(x=featureGroup, y=freq, fill=flagSel)) + 
+  geom_bar(stat = "identity") + coord_flip()  +
+  geom_text(aes(label = labelsT2, y = pos), size = 3) +
+  scale_fill_discrete(guide = guide_legend(title = "cv Selection\nfrequency")) +
+  ggtitle("T1w+T2w_predicted LMSIR ensembles: T2w feature selection frequency") +
+  labs(y="# features selected", x=" ") 
+
+
+######################################
+# pick frequency of 75% or higher as very common feature
+dfimgT2 = data.frame(table(varImpall_T2wmLMSIR$selfeat))
+dfimgT2$high = (dfimgT2$Freq>=0.75*10)*3 + 
+               (dfimgT2$Freq>=0.5*10 & dfimgT2$Freq<0.75*10)*2 + 
+               (dfimgT2$Freq<0.5*10)*1
+dfimgT2 = dfimgT2[order(dfimgT2$Freq, decreasing = TRUE),]
+
+# with dictionary assign type of feature
+dictimgT2 = feature_dictionary_typesT2(imgT2mLMSIR)
+dfreqimgT2 = data.frame()
+freqf = c()
+for(di in 1:nrow(dfimgT2)){
+  featname = as.character(dfimgT2[di,"Var1"])
+  if(!(featname %in% freqf)){
+    freqf = c(freqf, featname)
+    if(any(dictimgT2$fnnames$f==featname)){
+        dfreqimgT2 = rbind(dfreqimgT2, cbind(dfimgT2[di,],
+                          typefeature=dictimgT2$fnnames[dictimgT2$fnnames$f==featname,"type"][1]))}}}
+
+# only for selected T2w features
+T2w75orh =  dfreqimgT2[dfreqimgT2$high==3,]
+T2w50to75 =  dfreqimgT2[dfreqimgT2$high==2,]
+T2w25to50 =  dfreqimgT2[dfreqimgT2$high==1,]
+
+# plot 2
+# select freuqutnly selected features
+maxFreq_dictT2 = summary(as.factor(dictimgT2$fnnames$type))
+pander(maxFreq_dictT2)
+
+T2w75orhF = data.frame(featureGroup = names(summary(T2w75orh$typefeature)),
+           freq = summary(T2w75orh$typefeature))
+rownames(T2w75orhF)=NULL
+T2w75orhF$flagSel = ">75%"
+T2w50to75F = data.frame(featureGroup = names(summary(T2w50to75$typefeature)),
+           freq = summary(T2w50to75$typefeature))
+rownames(T2w50to75F)=NULL
+T2w50to75F$flagSel = "50-75%"
+T2w25to50F = data.frame(featureGroup = names(summary(T2w25to50$typefeature)),
+           freq = summary(T2w25to50$typefeature))
+rownames(T2w25to50F)=NULL
+T2w25to50F$flagSel = "<50%"
+
+allT2wFfreqmeasured = rbind(T2w75orhF, T2w50to75F, T2w25to50F)
+
+
+maxFf= c()
+for(i in 1:nrow(allT2wFfreqmeasured)){
+  Ff = unname(maxFreq_dictT2[names(maxFreq_dictT2) == allT2wFfreqmeasured$featureGroup[i]])
+  maxFf = c(maxFf, Ff)
+}
+allT2wFfreqmeasured$classifier = "selectedT2w"
+
+# finally plot
+# Get the positions of the labels
+allT2wFfreqmeasured = ddply(allT2wFfreqmeasured, .(featureGroup), transform, pos = cumsum(freq) - 0.5*freq)
+
+labelsT2 = allT2wFfreqmeasured$freq
+labelsT2[labelsT2==0]=""
+allT2wFfreqmeasured$labels = labelsT2
+
+ggplot(allT2wFfreqmeasured, aes(x=featureGroup, y=freq, fill=flagSel)) + 
+  geom_bar(stat = "identity") + coord_flip()  +
+  geom_text(aes(label = labelsT2, y = pos), size = 3) +
+  scale_fill_discrete(guide = guide_legend(title = "cv Selection\nfrequency")) +
+  ggtitle("T1w+T2w_measure LMSIR ensembles: T2w feature selection frequency") +
+  labs(y="# features selected", x=" ") 
+```
+               
+
+```{r save}
+save.image("Outputs/T2SIvspredLMSIR_summaryResults.RData")
+```
+

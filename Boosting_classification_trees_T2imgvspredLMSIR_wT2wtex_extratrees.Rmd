@@ -1,0 +1,187 @@
+---
+title: "Boosting classification trees - T2SI vs predLMSIR with extra trees "
+author: "Cristina Gallego"
+date: "Sept 5, 2017"
+output: 
+  html_document: 
+    fig_caption: yes
+    fig_width: 6
+    keep_md: yes
+    theme: cerulean
+    toc: yes
+---
+
+* This uses boosted tree-ensembles of T1w, T1w+T2w and T1w+T2w (with predicted LMSIR) 
+* This code analysis T2w added diagnostic value by comparing with ensembles of only T1w DCE-based features
+* T2w discrimination ability (added AUC ROC value)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, verbose = FALSE, warning=FALSE, message=FALSE, comment="", cache = TRUE)
+
+options(width = 100)
+setwd("Z:/Cristina/Section2/revision2-finalTreebased-boosting")
+library(R.utils)
+library(caret)
+require(ggplot2)
+library("RSQLite")
+library(pROC)
+library("Boruta")
+require(data.table)
+library(rpart)
+library(rpart.plot)
+library(R.utils)
+require(ggplot2)
+library(plyr)
+library(pander)
+library(gbm)
+library(adabag)
+
+source("functions.R")
+source("functionsModels.R")
+
+# add predicted LMSIR
+LMSIR_cv <- loadToEnv(("Inputs/finalregressorsLMSIR_T2w.RData"))[["LMSIR_cv"]]; 
+```
+
+## Run boostingTrees with internal cross-validation of parameters
+```{r run-boosting}
+sqlite <- dbDriver("SQLite")
+conn <- dbConnect(sqlite, "textureUpdatedFeatures.db")
+
+# 2) all T1w features
+lesionsQuery <- dbGetQuery(conn, "SELECT *
+         FROM  stage1features
+           INNER JOIN lesion ON (stage1features.lesion_id = lesion.lesion_id)
+           INNER JOIN f_T2 ON (stage1features.lesion_id = f_T2.lesion_id)")
+ 
+# For bootstrap resampling, createResample is used
+# Randomization is done at the patient level unique ids
+lesionsQuery = subset(lesionsQuery, lesion_label != "fociB" & lesion_label != "fociM" ) # exclude foci at this point
+id_cad_pts = lesionsQuery$cad_pt_no_txt
+uniq_cad = unique(lesionsQuery$cad_pt_no_txt)
+npatients = 1:length(uniq_cad)
+  
+# when y is a factor in an attempt to balance the class distributions within the splits.
+# The names of the list objects will denote the fold membership using the pattern 
+# resamples." meaning the ith section (of k) of the jth cross-validation set (of times).
+set.seed(1234)
+npatients = length(uniq_cad)
+kfcvpartitionsetD <- createFolds(y = 1:length(uniq_cad),## the outcome data are needed
+                                k = 10, 
+                                list = TRUE)
+
+# perform k-fold-out
+for(k in 1:10){  # 1:10f cv
+  ## Create folds leave-one-patient-out
+  allfT1 = read3Dtex_T1uniqcad_parti(id_cad_pts, uniq_cad, kfcvpartitionsetD, 10, k)
+  allfT1T2 = read3Dtex_T1T2uniqcad_parti(id_cad_pts, uniq_cad, kfcvpartitionsetD, 10, k)
+    
+  ## formant
+  T1train = allfT1[[1]]; T1traininfo = allfT1[[5]]; 
+  T1test = allfT1[[2]]; T1testinfo = allfT1[[6]];  
+  
+  T1T2train = allfT1T2[[1]]; T1T2traininfo = allfT1T2[[5]]; 
+  T1T2test = allfT1T2[[2]]; T1T2testinfo = allfT1T2[[6]];  
+  
+  # remove measured muscle-to-lesion SI / to add predicted
+  # add predicted T2w features
+  trainpredT2LMSIR = getid_predLMSIR(LMSIR_cv, T1T2traininfo$lesion_id)
+  testpredT2LMSIR = getid_predLMSIR(LMSIR_cv, T1T2testinfo$lesion_id)
+  # add to test set
+  T1T2test = cbind(T1T2test, testpredT2LMSIR[1])
+  
+  ##################
+  # Define datasets
+  ##################
+  imgT1train = T1train[,-c(ncol(T1train))]
+  imgT1T2 = T1T2train[,-c(201,ncol(T1T2train))] #"T1w -T2wSI_measureLMSIR"
+  imgT2pLMSIR = cbind(imgT1T2[,-c(199:200,222:241)], trainpredT2LMSIR[1]) #"T1w+T2wSI_predictedLMSIR"
+  
+  ##################
+  # Get Test info data
+  ##################   
+  dfinfo = cbind(T1T2testinfo[,c(1,24:26)])
+  pander(summary(as.factor(dfinfo$lesion_label)))
+  
+  ##################   
+  # Build final classifiers
+  ##################
+  cat("\n============ boosting trees imgT1train \n")
+  # train trees
+  treedata_imgT1 <- boosting_Train_wcv_wperf(imgT1train, T1test, typeSampling="oversmin")
+
+  ######## 
+  cat("\n============ boosting trees imgT1T2 \n")
+  # train trees
+  treedata_imgT1T2 <- boosting_Train_wcv_wperf(imgT1T2, T1T2test[c(names(imgT1T2))], typeSampling="oversmin")
+
+  #######  
+  cat("\n============ boosting trees imgT2pLMSIR \n")
+  # train trees
+  treedata_T2wpLMSIR <- boosting_Train_wcv_wperf(imgT2pLMSIR, T1T2test[c(names(imgT2pLMSIR))], typeSampling="oversmin")
+
+  ##################
+  ### predict for each classifier
+  ##################
+  ## for treedata_imgT1
+  perf_imgT1 = data.frame(C=treedata_imgT1$testperf$testpred[,1],
+                    NC=treedata_imgT1$testperf$testpred[,2],
+                    pred=ifelse(apply(treedata_imgT1$testperf$testpred, 1, which.max)==1,"C","NC"), 
+                    obs=treedata_imgT1$testperf$labelstest,
+                    id=T1testinfo$lesion_id)
+  
+  # for treedata_imgT1T2
+  perf_imgT1T2 = data.frame(C=treedata_imgT1T2$testperf$testpred[,1],
+                    NC=treedata_imgT1T2$testperf$testpred[,2],
+                    pred=ifelse(apply(treedata_imgT1T2$testperf$testpred, 1, which.max)==1,"C","NC"),
+                    obs=treedata_imgT1T2$testperf$labelstest,
+                    id=T1T2testinfo$lesion_id) 
+  
+  # for treedata_T2wpLMSIR
+  perf_T2wpLMSIR = data.frame(C=treedata_T2wpLMSIR$testperf$testpred[,1],
+                    NC=treedata_T2wpLMSIR$testperf$testpred[,2],
+                    pred=ifelse(apply(treedata_T2wpLMSIR$testperf$testpred, 1, which.max)==1,"C","NC"),
+                    obs=treedata_T2wpLMSIR$testperf$labelstest,
+                    id=T1T2testinfo$lesion_id) 
+  
+  # AUC
+  rocperf_imgT1 = roc(perf_imgT1$obs, perf_imgT1$C)
+  print(rocperf_imgT1)
+
+  rocperf_imgT1T2 = roc(perf_imgT1T2$obs, perf_imgT1T2$C)
+  print(rocperf_imgT1T2)
+  
+  rocperf_T2wpLMSIR = roc(perf_T2wpLMSIR$obs, perf_T2wpLMSIR$C)
+  print(rocperf_T2wpLMSIR)
+   
+  # plot every 10 patients
+  ## plot ROCs each pass individually in l-o-p heldout test cases
+  par(mfrow=c(1,1))
+  n=15
+  colors = rainbow(n, s = 1, v = 1, start = 0, end = max(1, n - 1)/n, alpha = 1)
+  # plot 1/4
+  p1 = calcAUC_plot(perf_imgT1$obs, perf_imgT1$C, 
+                             xptext=0.45, yptext=0.75 , 1, colors[2], atitle="")
+  par(new=TRUE)
+  p2 = calcAUC_plot(perf_imgT1T2$obs, perf_imgT1T2$C, 
+                             xptext=0.55, yptext=0.65, 2, colors[9], atitle="")
+  par(new=TRUE)
+  p3 = calcAUC_plot(perf_T2wpLMSIR$obs, perf_T2wpLMSIR$C,
+                             xptext=0.65, yptext=0.55, 3, colors[11], 
+                    atitle=paste0("ROCs 10f-patient out cv test k-fold= ",k))
+  
+  legend("bottomright", 
+         legend = c(paste0("T1w"),
+                    paste0("T1w+T2wtex+T2wSI"),
+                    paste0("T1w+T2wtex+predLMSIR")),
+         col = c(colors[2],colors[9],colors[11]), lty=c(1,2,3), lwd = 2)
+
+    
+  # save current state k patient out
+  save.image(paste0("Outputs/T1T2imgvsT2wtextpredLMSIR_boost_addeddiagvalue_extratrees_cv",k,".RData"))
+
+}
+
+```
+
+

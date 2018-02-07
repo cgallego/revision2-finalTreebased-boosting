@@ -1,0 +1,684 @@
+---
+title: "Rule extraction Illustration with cases - experiments new paper"
+output:
+  html_document:
+    fig_caption: yes
+    fig_height: 5
+    fig_width: 6
+    highlight: pygments
+    keep_md: yes
+    toc: yes
+---
+
+```{r set-options, verbose=TRUE, echo=FALSE, cache=FALSE, message = FALSE, warning=FALSE}
+knitr::opts_chunk$set(root.dir="Z:/Cristina/Section2/revision2-finalTreebased-boosting",
+                      echo = TRUE, verbose = TRUE, 
+                      warning=FALSE, message=FALSE, comment="", tidy = TRUE)
+ 
+options(width = 95)
+setwd("Z:/Cristina/Section2/revision2-finalTreebased-boosting")
+library(R.utils)
+library(caret)
+require(ggplot2)
+library("RSQLite")
+library(pROC)
+library("Boruta")
+require(data.table)
+library(rpart)
+library(rpart.plot)
+library(R.utils)
+library(pander)
+library(adabag)
+library(grDevices)
+library(inTrees)
+library(gbm)
+library(xtable)
+  
+source('Functions.R')
+load("Outputs/allcvRules_noT2SIpredLMSIR_boost_addeddiagvalue.RData")
+source('FunctionsRules.R')
+
+LMSIR_cv <- loadToEnv(("Z:/Cristina/Section2/revision2-finalTreebased-boosting/Inputs/finalregressorsLMSIR_T2w.RData"))[["LMSIR_cv"]]; 
+
+```
+
+## Summarize ROC of rules and rulemodel
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=8, fig.height=8, results='markup'}
+confusionMatrix(allrulesres[,"predR"], allrulesres[,"obsR"])
+
+par(mfrow=c(1,1))
+pModel = calcAUC_plot(allrulesres$obsR, as.numeric(allrulesres[,"probRules"]),
+                           xptext=0.75, yptext=0.45, 1, colors[15], 
+                  atitle="")
+par(new=TRUE)
+pRules = calcAUC_plot(allrulesres$obsR, as.numeric(allrulesres[,"probModel"]),
+                           xptext=0.65, yptext=0.55, 5, colors[2], 
+                  atitle="ROCs 10f-patient out cv test all folds ")
+
+legend("bottomright", 
+       legend = c(paste0("probRules"),
+                  paste0("probModel")),
+    col = c(colors[15],colors[2]), lty=c(1,5), lwd = 2)
+
+thresh = as.numeric(row.names(pModel$best_thr$sensitivity))
+confusionMatrix(ifelse(allrulesres[,"probModel"]>=thresh,"C","NC"), allrulesres[,"obsR"])
+
+```
+
+## find cases using LMSIR rule
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=8, fig.height=6}
+
+LMSIRfeatureflag = c()
+for(i in 1:length(eachtestRules)){
+  LMSIRwtop5 = FALSE
+  eachtestRules[[i]]$Ruletype
+  # recognize whether t2w features are used
+  isT2wtop5 = "T2w" %in% unlist(strsplit(eachtestRules[[i]]$Ruletype, split = " & ")) 
+  
+  # if isT2wtop5 find if LMSIR
+  if(isT2wtop5){
+    LMSIRwtop5 = "LMSIR" %in% unlist(strsplit(unlist(strsplit(eachtestRules[[i]]$condition, split = " & ")), split = " "))
+    LMSIRfeatureflag = c(LMSIRfeatureflag, LMSIRwtop5)
+  }else{
+    LMSIRfeatureflag = c(LMSIRfeatureflag, FALSE)
+  }
+}
+print(summary(LMSIRfeatureflag))
+
+idxwLMSIR = c(1:length(eachtestRules))[LMSIRfeatureflag]
+print(idxwLMSIR)
+
+```
+
+
+## Case by case illustration: Using T2w SI & Texture
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=8, fig.height=6}
+# exemplify one # Texture T2w & SI
+lesion_id = 41
+# or
+# idx= 41
+idx = c(1:nrow(allTestinfo))[allTestinfo$lesion_id==lesion_id]
+print(allTestinfo[idx,-c(20)])
+
+# get LMSIR
+LMSIR = LMSIR_cv[LMSIR_cv$lesion_id==allTestinfo[idx,"lesion_id"],]
+print(LMSIR)
+
+selRulesIx = eachtestRules[[idx]]
+# average error rate of 5 top scoring rules
+print(sum(as.numeric(selRulesIx$err))/nrow(selRulesIx))
+
+# present rules
+print(thresh)
+myrules = selRulesIx 
+myrules$pred = ifelse(myrules$sumtempProb>=thresh, "C","NC")
+print(myrules)
+print(xtable(myrules), include.rownames=FALSE)
+
+# averprobTop5[idx] of prediction
+print(averprobTop5[idx])
+
+# classTop5[idx] based on prob >= theshold found via ROC space
+print(classTop5[idx])
+
+```
+
+
+
+![](Z:/Cristina/Section2/papernew_notes/images/41_0190_6760690_nonmassM_None.png)
+
+
+### Case by case illustration: cases using LMSIR rule
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=8, fig.height=6}
+# exemplify one # LMSIR
+lesion_id = 10
+# or
+#idx=  153 #188 149 or 119 or 331
+idx = c(1:nrow(allTestinfo))[allTestinfo$lesion_id==lesion_id]
+print(allTestinfo[idx,-c(20)])
+
+selRulesIx = eachtestRules[[idx]]
+# average error rate of 5 top scoring rules
+print(sum(as.numeric(selRulesIx$err))/nrow(selRulesIx))
+
+# get LMSIR
+LMSIR = LMSIR_cv[LMSIR_cv$lesion_id==allTestinfo[idx,"lesion_id"],]
+print(LMSIR)
+
+# present rules
+print(thresh)
+myrules = selRulesIx 
+myrules$pred = ifelse(myrules$sumtempProb>=thresh, "C","NC")
+print(myrules)
+print(xtable(myrules), include.rownames=FALSE)
+
+# averprobTop5[idx] of prediction
+print(averprobTop5[idx])
+
+# classTop5[idx] based on prob >= theshold found via ROC space
+print(classTop5[idx])
+```
+
+![](Z:/Cristina/Section2/papernew_notes/images/10_0102_4755778_massB_Hyperintense.png)
+
+
+## Some Illustrations
+### Based on IDC, ISDC, FA, FI ... cannonical examples of each
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=8, fig.height=6}
+data = data.frame(cbind(allTraininfo, allTestinfo$lesion_id, 
+                                    allTestinfo$lesion_label, 
+                                    allTestinfo$lesion_diagnosis))
+
+IDC = subset(data, allTestinfo.lesion_diagnosis == "InvasiveDuctal")
+summary(IDC$allTestinfo.lesion_label)
+ISDC = subset(data, allTestinfo.lesion_diagnosis == "InsituDuctal")
+summary(ISDC$allTestinfo.lesion_label)
+FA = subset(data, allTestinfo.lesion_diagnosis == "FIBROADENOMA")
+summary(FA$allTestinfo.lesion_label)
+FI = subset(data, allTestinfo.lesion_diagnosis == "FIBROCYSTIC")
+summary(FI$allTestinfo.lesion_label)
+
+sqlite <- dbDriver("SQLite")
+conn <- dbConnect(sqlite, "Z:/Cristina/Section2/finalTreebased-boosting/textureUpdatedFeatures.db")
+
+# 2) all T1W features
+lesionsQuery <- dbGetQuery(conn, "SELECT *
+                           FROM  lesion 
+                           INNER JOIN f_dynamic ON (lesion.lesion_id = f_dynamic.lesion_id)
+                           INNER JOIN f_morphology ON (lesion.lesion_id = f_morphology.lesion_id)
+                           INNER JOIN f_texture ON (lesion.lesion_id = f_texture.lesion_id)
+                           INNER JOIN stage1features ON (lesion.lesion_id = stage1features.lesion_id)
+                           INNER JOIN f_T2 ON (lesion.lesion_id = f_T2.lesion_id)
+                           INNER JOIN radiologyInfo ON (lesion.lesion_id = radiologyInfo.lesion_id)")
+
+# prune entries and extract feature subsets
+# corresponds to 5 entries lesion info, 34 dynamic, 19 morpho, 34 texture fueatures
+lesioninfo = lesionsQuery[c(1:26,259)]
+# select non foci
+lesioninfo = subset(lesioninfo, lesion_label != "fociB" & lesion_label != "fociM" )
+
+table(lesioninfo$find_t2_signal_int)
+
+```
+
+
+
+# 1) Present rules collect top for IDC
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=12, fig.height=12}
+library(png)
+library(grid)
+
+eachIDCTopRules = list()
+allIDCtoprules = c()
+for (idx in 1:nrow(IDC)) {
+  ############## first analysis
+  X = IDC[idx, 2:ncol(imgT2pLMSIRtest)]
+  y = IDC[idx, "lesion_label"]
+  
+  rulesoutputIDC = mynewapplyLearnerxrules(topRulesIDC, X, y, minerr = 0.1, minfrq = 10/627, classes, gbmModel)
+  topRulesIDC = rulesoutputIDC[[1]]
+  
+  if (length(rulesoutputIDC) > 1) {
+      eachIDCTopRules[[idx]] = rulesoutputIDC[[2]]
+      allIDCtoprules = rbind(allIDCtoprules, rulesoutputIDC[[3]])
+  } else {
+      eachIDCTopRules[[idx]] = list()
+      allIDCtoprules = rbind(allIDCtoprules, 1:nrow(topRulesIDC) * 0)
+  }
+}
+
+# take the occurance of each explaining rule (columns) per case(row) + lesion identifies
+df = data.frame(cbind(allIDCtoprules, 
+                      as.character(IDC$allTestinfo.lesion_id), 
+                      as.character(IDC$allTestinfo.lesion_label),
+                      as.character(IDC$allTestinfo.lesion_diagnosis)),stringsAsFactors = FALSE)
+colnames(df) <- c(as.character(1:nrow(topRulesIDC)), "lesion_id", "lesion_label", "lesion_diagnosis")
+cols = 1:nrow(topRulesIDC)
+df[, cols] = apply(df[, cols], 2, function(x) as.numeric(x))
+
+
+cat(paste0("\n============== Top five explaining rules for InvasiveDuctal (IDC): n = ", nrow(IDC)+2,"\n"))
+topIDC = sort(colSums(df[, 1:nrow(topRulesIDC)]), decreasing = TRUE)
+print(topIDC[1:5])
+freqtopIDC = topIDC[1:5]
+totalIDC = nrow(IDC)+2
+print(freqtopIDC/totalIDC)
+rulesTopIDC = as.numeric(names(topIDC[1:5]))
+preserulesTopIDC = mypresentRules(topRulesIDC[rulesTopIDC, ], colnames(X), fnames)
+rownames(preserulesTopIDC) <- NULL
+print(preserulesTopIDC)
+
+# display a case that meets them all
+casesIDC = df[, c(rulesTopIDC, nrow(topRulesIDC) + 1, nrow(topRulesIDC) + 2, nrow(topRulesIDC) + 3)]
+print("Sorted cases meeting top five explaining rules for InvasiveDuctal (IDC):")
+topcasesIDC = casesIDC[sort(rowSums(casesIDC[, 1:5]), index=TRUE, decreasing = TRUE)$ix,]
+print(topcasesIDC)
+
+
+print("Fine explaining rules for InvasiveDuctal (IDC) with LMSIR:")
+LMSIRfeatureflag = c()
+idLMSIR = c()
+for(i in 1:length(eachIDCTopRules)){
+  if(length(eachIDCTopRules[[i]])>0){
+    rules = mypresentRules(eachIDCTopRules[[i]], colnames(X), fnames)
+    LMSIRwtop5 = "LMSIR" %in% unlist(strsplit(unlist(strsplit(rules$condition, split = " & ")), split = " "))
+    if(LMSIRwtop5){
+      LMSIRfeatureflag = c(LMSIRfeatureflag, LMSIRwtop5)
+      print(i)
+      print(rules)
+      idLMSIR = c(idLMSIR,i)
+    }else{
+      LMSIRfeatureflag = c(LMSIRfeatureflag, FALSE)
+    }
+  }else{
+    LMSIRfeatureflag = c(LMSIRfeatureflag, FALSE)
+  }
+}
+print(summary(LMSIRfeatureflag))
+
+
+### display
+lesion_id = 241
+
+idx = c(1:nrow(IDC))[c(IDC$allTestinfo.lesion_id==lesion_id)]
+infoidx = allTestinfo[allTestinfo$lesion_id==lesion_id,-c(20)]
+print(infoidx)
+cat(allTestinfo[allTestinfo$lesion_id==lesion_id,c(20)])
+print(mypresentRules(eachIDCTopRules[[idx]], colnames(X), fnames))
+
+#print(IDC[IDC$allTestinfo.lesion_id==241,])
+imgIDC <- readPNG(paste0("Z:/Cristina/Section2/papernew_notes/images/",
+                       as.character(lesion_id),'_',
+                      infoidx$cad_pt_no_txt,'_',
+                      infoidx$exam_a_number_txt,'_',
+                      infoidx$lesion_label,'_',
+                      lesioninfo[lesioninfo$lesion_id==lesion_id,"find_t2_signal_int"],
+                      ".png"))
+grid.raster(imgIDC)
+
+## with LMSIR
+if(length(idLMSIR)>0){
+  for(i in 1:length(idLMSIR)){
+    idx = idLMSIR[i]
+    lesion_id = IDC[idx,]$allTestinfo.lesion_id
+    print(lesion_id)
+  }
+}
+idx = c(1:nrow(IDC))[c(IDC$allTestinfo.lesion_id==lesion_id)]
+infoidx = allTestinfo[allTestinfo$lesion_id==lesion_id,-c(20)]
+print(infoidx)
+print(mypresentRules(eachIDCTopRules[[idx]], colnames(X), fnames))
+
+
+```
+
+![](Z:/Cristina/Section2/papernew_notes/images/241_0817_5363917_massM_Hyperintense.png)
+
+
+# 2) Present rules collect top for InsituDuctal ISDC
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=12, fig.height=12}
+
+eachISDCTopRules = list()
+allISDCtoprules = c()
+for (idx in 1:nrow(ISDC)) {
+  ############## first analysis
+  X = ISDC[idx, 2:ncol(imgT2pLMSIRtest)]
+  y = ISDC[idx, "lesion_label"]
+  
+  rulesoutputISDC = mynewapplyLearnerxrules(topRulesISDC, X, y, minerr = 0.1, minfrq = 10/627, classes, gbmModel)
+  topRulesISDC = rulesoutputISDC[[1]]
+  
+  if (length(rulesoutputISDC) > 1) {
+      eachISDCTopRules[[idx]] = rulesoutputISDC[[2]]
+      allISDCtoprules = rbind(allISDCtoprules, rulesoutputISDC[[3]])
+  } else {
+      eachISDCTopRules[[idx]] = list()
+      allISDCtoprules = rbind(allISDCtoprules, 1:nrow(topRulesISDC) * 0)
+  }
+}
+
+# take the occurance of each explaining rule (columns) per case(row) + lesion identifies
+df = data.frame(cbind(allISDCtoprules, 
+                      as.character(ISDC$allTestinfo.lesion_id), 
+                      as.character(ISDC$allTestinfo.lesion_label),
+                      as.character(ISDC$allTestinfo.lesion_diagnosis)),stringsAsFactors = FALSE)
+colnames(df) <- c(as.character(1:nrow(topRulesISDC)), "lesion_id", "lesion_label", "lesion_diagnosis")
+cols = 1:nrow(topRulesISDC)
+df[, cols] = apply(df[, cols], 2, function(x) as.numeric(x))
+
+
+cat(paste0("\n============== Top five explaining rules for InsituDuctal (ISDC): n = ", nrow(ISDC),"\n"))
+topISDC = sort(colSums(df[, 1:nrow(topRulesISDC)]), decreasing = TRUE)
+print(topISDC[1:5])
+freqtopISDC = topISDC[1:5]
+print(freqtopISDC/nrow(ISDC))
+rulesTopISDC = as.numeric(names(topISDC[1:5]))
+preserulesTopISDC = mypresentRules(topRulesISDC[rulesTopISDC, ], colnames(X), fnames)
+rownames(preserulesTopISDC) <- NULL
+print(preserulesTopISDC)
+
+# display a case that meets them all
+casesISDC = df[, c(rulesTopISDC, nrow(topRulesISDC) + 1, nrow(topRulesISDC) + 2, nrow(topRulesISDC) + 3)]
+print("Sorted cases meeting top five explaining rules for InsituDuctal (ISDC):")
+topcasesISDC = casesISDC[sort(rowSums(casesISDC[, 1:5]), index=TRUE, decreasing = TRUE)$ix,]
+print(topcasesISDC)
+
+print("Fine explaining rules for InsituDuctal (ISDC) with LMSIR:")
+LMSIRfeatureflag = c()
+idLMSIR = c()
+for(i in 1:length(eachISDCTopRules)){
+  if(length(eachISDCTopRules[[i]])>0){
+    rules = mypresentRules(eachISDCTopRules[[i]], colnames(X), fnames)
+    LMSIRwtop5 = "LMSIR" %in% unlist(strsplit(unlist(strsplit(rules$condition, split = " & ")), split = " "))
+    if(LMSIRwtop5){
+      LMSIRfeatureflag = c(LMSIRfeatureflag, LMSIRwtop5)
+      print(i)
+      print(rules)
+      idLMSIR = c(idLMSIR,i)
+    }else{
+      LMSIRfeatureflag = c(LMSIRfeatureflag, FALSE)
+    }
+  }else{
+    LMSIRfeatureflag = c(LMSIRfeatureflag, FALSE)
+  }
+}
+print(summary(LMSIRfeatureflag))
+
+
+### display
+lesion_id = 595
+idx = c(1:nrow(ISDC))[c(ISDC$allTestinfo.lesion_id==lesion_id)]
+infoidx = allTestinfo[allTestinfo$lesion_id==lesion_id,-c(20)]
+print(infoidx)
+cat(allTestinfo[allTestinfo$lesion_id==lesion_id,c(20)])
+print(mypresentRules(eachISDCTopRules[[idx]], colnames(X), fnames))
+
+#print(ISDC[ISDC$allTestinfo.lesion_id==241,])
+imgISDC <- readPNG(paste0("Z:/Cristina/Section2/papernew_notes/images/",
+                       as.character(lesion_id),'_',
+                      infoidx$cad_pt_no_txt,'_',
+                      infoidx$exam_a_number_txt,'_',
+                      infoidx$lesion_label,'_',
+                      lesioninfo[lesioninfo$lesion_id==lesion_id,"find_t2_signal_int"],
+                      ".png"))
+grid.raster(imgISDC)
+
+## with LMSIR
+if(length(idLMSIR)>0){
+  for(i in 1:length(idLMSIR)){
+    idx = idLMSIR[i]
+    lesion_id = ISDC[idx,]$allTestinfo.lesion_id
+    print(lesion_id)
+  }
+}
+idx = c(1:nrow(ISDC))[c(ISDC$allTestinfo.lesion_id==lesion_id)]
+infoidx = allTestinfo[allTestinfo$lesion_id==lesion_id,-c(20)]
+print(infoidx)
+print(mypresentRules(eachISDCTopRules[[idx]], colnames(X), fnames))
+
+```
+
+![](Z:/Cristina/Section2/papernew_notes/images/595_7018_6803089_massM_None.png)
+
+# 3) Present rules collect top for FIBROADENOMA FA
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=12, fig.height=12}
+
+eachFATopRules = list()
+allFAtoprules = c()
+for (idx in 1:nrow(FA)) {
+  ############## first analysis
+  X = FA[idx, 2:ncol(imgT2pLMSIRtest)]
+  y = FA[idx, "lesion_label"]
+  
+  rulesoutputFA = mynewapplyLearnerxrules(topRulesFA, X, y, minerr = 0.1, minfrq = 10/627, classes, gbmModel)
+  topRulesFA = rulesoutputFA[[1]]
+  
+  if (length(rulesoutputFA) > 1) {
+      eachFATopRules[[idx]] = rulesoutputFA[[2]]
+      allFAtoprules = rbind(allFAtoprules, rulesoutputFA[[3]])
+  } else {
+      eachFATopRules[[idx]] = list()
+      allFAtoprules = rbind(allFAtoprules, 1:nrow(topRulesFA) * 0)
+  }
+}
+
+# take the occurance of each explaining rule (columns) per case(row) + lesion identifies
+df = data.frame(cbind(allFAtoprules, 
+                      as.character(FA$allTestinfo.lesion_id), 
+                      as.character(FA$allTestinfo.lesion_label),
+                      as.character(FA$allTestinfo.lesion_diagnosis)),stringsAsFactors = FALSE)
+colnames(df) <- c(as.character(1:nrow(topRulesFA)), "lesion_id", "lesion_label", "lesion_diagnosis")
+cols = 1:nrow(topRulesFA)
+df[, cols] = apply(df[, cols], 2, function(x) as.numeric(x))
+
+
+cat(paste0("\n============== Top five explaining rules for FIBROADENOMA (FA): n = ", nrow(FA)+1,"\n"))
+topFA = sort(colSums(df[, 1:nrow(topRulesFA)]), decreasing = TRUE)
+print(topFA[1:5])
+freqtopFA = topFA[1:5]
+totalFA = nrow(FA)+1
+print(freqtopFA/totalFA)
+rulesTopFA = as.numeric(names(topFA[1:5]))
+preserulesTopFA = mypresentRules(topRulesFA[rulesTopFA, ], colnames(X), fnames)
+rownames(preserulesTopFA) <- NULL
+print(preserulesTopFA)
+
+# display a case that meets them all
+casesFA = df[, c(rulesTopFA, nrow(topRulesFA) + 1, nrow(topRulesFA) + 2, nrow(topRulesFA) + 3)]
+print("Sorted cases meeting top five explaining rules for FIBROADENOMA (FA):")
+topcasesFA = casesFA[sort(rowSums(casesFA[, 1:5]), index=TRUE, decreasing = TRUE)$ix,]
+print(topcasesFA)
+
+print("Fine explaining rules for FIBROADENOMA (FA) with LMSIR:")
+LMSIRfeatureflag = c()
+idLMSIR = c()
+for(i in 1:length(eachFATopRules)){
+  if(length(eachFATopRules[[i]])>0){
+    rules = mypresentRules(eachFATopRules[[i]], colnames(X), fnames)
+    LMSIRwtop5 = "LMSIR" %in% unlist(strsplit(unlist(strsplit(rules$condition, split = " & ")), split = " "))
+    if(LMSIRwtop5){
+      LMSIRfeatureflag = c(LMSIRfeatureflag, LMSIRwtop5)
+      print(i)
+      print(rules)
+      idLMSIR = c(idLMSIR,i)
+    }else{
+      LMSIRfeatureflag = c(LMSIRfeatureflag, FALSE)
+    }
+  }else{
+    LMSIRfeatureflag = c(LMSIRfeatureflag, FALSE)
+  }
+}
+print(summary(LMSIRfeatureflag))
+
+
+### display
+lesion_id = 436
+idx = c(1:nrow(FA))[c(FA$allTestinfo.lesion_id==lesion_id)]
+infoidx = allTestinfo[allTestinfo$lesion_id==lesion_id,-c(20)]
+print(infoidx)
+cat(allTestinfo[allTestinfo$lesion_id==lesion_id,c(20)])
+print(mypresentRules(eachFATopRules[[idx]], colnames(X), fnames))
+
+#print(FA[FA$allTestinfo.lesion_id==241,])
+imgFA <- readPNG(paste0("Z:/Cristina/Section2/papernew_notes/images/",
+                       as.character(lesion_id),'_',
+                      infoidx$cad_pt_no_txt,'_',
+                      infoidx$exam_a_number_txt,'_',
+                      infoidx$lesion_label,'_',
+                      lesioninfo[lesioninfo$lesion_id==lesion_id,"find_t2_signal_int"],
+                      ".png"))
+grid.raster(imgFA)
+
+## with LMSIR
+if(length(idLMSIR)>0){
+  for(i in 1:length(idLMSIR)){
+    idx = idLMSIR[i]
+    lesion_id = FA[idx,]$allTestinfo.lesion_id
+    print(lesion_id)
+  }
+}
+idx = c(1:nrow(FA))[c(FA$allTestinfo.lesion_id==lesion_id)]
+infoidx = allTestinfo[allTestinfo$lesion_id==lesion_id,-c(20)]
+print(infoidx)
+print(mypresentRules(eachFATopRules[[idx]], colnames(X), fnames))
+
+
+```
+
+
+![](Z:/Cristina/Section2/papernew_notes/images/436_3046_7289130_massB_Hyperintense.png)
+
+# 4) Present rules collect top for FIBROCYSTIC FI
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=12, fig.height=12}
+
+eachFITopRules = list()
+allFItoprules = c()
+for (idx in 1:nrow(FI)) {
+  ############## first analysis
+  X = FI[idx, 2:ncol(imgT2pLMSIRtest)]
+  y = FI[idx, "lesion_label"]
+  
+  rulesoutputFI = mynewapplyLearnerxrules(topRulesFI, X, y, minerr = 0.1, minfrq = 10/627, classes, gbmModel)
+  topRulesFI = rulesoutputFI[[1]]
+  
+  if (length(rulesoutputFI) > 1) {
+      eachFITopRules[[idx]] = rulesoutputFI[[2]]
+      allFItoprules = rbind(allFItoprules, rulesoutputFI[[3]])
+  } else {
+      eachFITopRules[[idx]] = list()
+      allFItoprules = rbind(allFItoprules, 1:nrow(topRulesFI) * 0)
+  }
+}
+
+# take the occurance of each explaining rule (columns) per case(row) + lesion identifies
+df = data.frame(cbind(allFItoprules, 
+                      as.character(FI$allTestinfo.lesion_id), 
+                      as.character(FI$allTestinfo.lesion_label),
+                      as.character(FI$allTestinfo.lesion_diagnosis)),stringsAsFactors = FALSE)
+colnames(df) <- c(as.character(1:nrow(topRulesFI)), "lesion_id", "lesion_label", "lesion_diagnosis")
+cols = 1:nrow(topRulesFI)
+df[, cols] = apply(df[, cols], 2, function(x) as.numeric(x))
+
+
+cat(paste0("\n============== Top five explaining rules for FIBROCYSTIC (FI): n = ", nrow(FA),"\n"))
+topFI = sort(colSums(df[, 1:nrow(topRulesFI)]), decreasing = TRUE)
+print(topFI[1:5])
+freqtopFI = topFI[1:5]
+print(freqtopFI/nrow(FI))
+rulesTopFI = as.numeric(names(topFI))
+preserulesTopFI = mypresentRules(topRulesFI[rulesTopFI, ], colnames(X), fnames)
+rownames(preserulesTopFI) <- NULL
+print(preserulesTopFI)
+
+# display a case that meets them all
+casesFI = df[, c(rulesTopFI, nrow(topRulesFI) + 1, nrow(topRulesFI) + 2, nrow(topRulesFI) + 3)]
+print("Sorted cases meeting top five explaining rules for FIBROCYSTIC (FI):")
+topcasesFI = casesFI[sort(rowSums(casesFI[, 1:5]), index=TRUE, decreasing = TRUE)$ix,]
+print(topcasesFI)
+
+print("Fine explaining rules for FIBROCYSTIC (FI) with LMSIR:")
+LMSIRfeatureflag = c()
+idLMSIR = c()
+for(i in 1:length(eachFITopRules)){
+  if(length(eachFITopRules[[i]])>0){
+    rules = mypresentRules(eachFITopRules[[i]], colnames(X), fnames)
+    LMSIRwtop5 = "LMSIR" %in% unlist(strsplit(unlist(strsplit(rules$condition, split = " & ")), split = " "))
+    if(LMSIRwtop5){
+      LMSIRfeatureflag = c(LMSIRfeatureflag, LMSIRwtop5)
+      print(i)
+      print(rules)
+      idLMSIR = c(idLMSIR,i)
+    }else{
+      LMSIRfeatureflag = c(LMSIRfeatureflag, FALSE)
+    }
+  }else{
+    LMSIRfeatureflag = c(LMSIRfeatureflag, FALSE)
+  }
+}
+print(summary(LMSIRfeatureflag))
+
+### display
+lesion_id = 10
+idx = c(1:nrow(FI))[c(FI$allTestinfo.lesion_id==lesion_id)]
+infoidx = allTestinfo[allTestinfo$lesion_id==lesion_id,-c(20)]
+print(infoidx)
+cat(allTestinfo[allTestinfo$lesion_id==lesion_id,c(20)])
+print(mypresentRules(eachFITopRules[[idx]], colnames(X), fnames))
+
+#print(FI[FI$allTestinfo.lesion_id==241,])
+imgFI <- readPNG(paste0("Z:/Cristina/Section2/papernew_notes/images/",
+                       as.character(lesion_id),'_',
+                      infoidx$cad_pt_no_txt,'_',
+                      infoidx$exam_a_number_txt,'_',
+                      infoidx$lesion_label,'_',
+                      lesioninfo[lesioninfo$lesion_id==lesion_id,"find_t2_signal_int"],
+                      ".png"))
+grid.raster(imgFI)
+
+## with LMSIR
+if(length(idLMSIR)>0){
+  for(i in 1:length(idLMSIR)){
+    idx = idLMSIR[i]
+    lesion_id = FI[idx,]$allTestinfo.lesion_id
+    print(lesion_id)
+  }
+}
+idx = c(1:nrow(FI))[c(FI$allTestinfo.lesion_id==lesion_id)]
+infoidx = allTestinfo[allTestinfo$lesion_id==lesion_id,-c(20)]
+print(infoidx)
+print(mypresentRules(eachFITopRules[[idx]], colnames(X), fnames))
+
+
+```
+
+
+![](Z:/Cristina/Section2/papernew_notes/images/10_0102_4755778_massB_Hyperintense.png)
+
+# Hand picked cases for illustration:for IDC
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=12, fig.height=12}
+print( topcasesIDC[topcasesIDC$lesion_id==9,] )
+lesion_id = 9
+idx = c(1:nrow(IDC))[c(IDC$allTestinfo.lesion_id==lesion_id)]
+infoidx = allTestinfo[allTestinfo$lesion_id==lesion_id,-c(20)]
+print(infoidx)
+
+cat(allTestinfo[allTestinfo$lesion_id==lesion_id,c(20)])
+
+rulesaIDC = mypresentRules(eachIDCTopRules[[idx]], colnames(X), fnames)
+print(rulesaIDC)
+
+#print(FI[FI$allTestinfo.lesion_id==241,])
+imgaIDC <- readPNG(paste0("Z:/Cristina/Section2/papernew_notes/images/",
+                       as.character(lesion_id),'_',
+                      infoidx$cad_pt_no_txt,'_',
+                      infoidx$exam_a_number_txt,'_',
+                      infoidx$lesion_label,'_',
+                      lesioninfo[lesioninfo$lesion_id==lesion_id,"find_t2_signal_int"],
+                      ".png"))
+grid.raster(imgaIDC)
+```
+
+
+# Hand picked cases for illustration:for FI
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, fig.width=12, fig.height=12}
+print( topcasesFI[topcasesFI$lesion_id==10,] )  ## 301, 66
+lesion_id = 10
+idx = c(1:nrow(FI))[c(FI$allTestinfo.lesion_id==lesion_id)]
+infoidx = allTestinfo[allTestinfo$lesion_id==lesion_id,-c(20)]
+print(infoidx)
+
+cat(allTestinfo[allTestinfo$lesion_id==lesion_id,c(20)])
+
+rulesaFI = mypresentRules(eachFITopRules[[idx]], colnames(X), fnames)
+print(rulesaFI)
+
+#print(FI[FI$allTestinfo.lesion_id==241,])
+imgaIF <- readPNG(paste0("Z:/Cristina/Section2/papernew_notes/images/",
+                       as.character(lesion_id),'_',
+                      infoidx$cad_pt_no_txt,'_',
+                      infoidx$exam_a_number_txt,'_',
+                      infoidx$lesion_label,'_',
+                      lesioninfo[lesioninfo$lesion_id==lesion_id,"find_t2_signal_int"],
+                      ".png"))
+grid.raster(imgaIF)
+```

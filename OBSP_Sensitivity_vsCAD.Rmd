@@ -1,0 +1,251 @@
+---
+title: "OBSP - Sensitivity - Analysis revision 2"
+output:
+  html_document:
+    fig_caption: yes
+    fig_height: 5
+    fig_width: 6
+    highlight: pygments
+    keep_md: yes
+    toc: yes
+---
+
+```{r set-options, verbose=TRUE, echo=FALSE, cache=FALSE, message = FALSE, warning=FALSE}
+knitr::opts_chunk$set(root.dir="Z:/Cristina/Section2/revision2-finalTreebased-boosting",
+                      echo = TRUE, verbose = TRUE, 
+                      warning=FALSE, message=FALSE, comment="", tidy = TRUE)
+
+options(width = 100)
+setwd("Z:/Cristina/Section2/revision2-finalTreebased-boosting")
+library(R.utils)
+library(caret)
+require(ggplot2)
+library("RSQLite")
+library(pROC)
+library("Boruta")
+require(data.table)
+library(rpart)
+library(rpart.plot)
+library(R.utils)
+library(pander)
+library(adabag)
+library(grDevices)
+library(inTrees)
+library(gbm)
+
+source('Functions.R')
+source('FunctionsRules.R')
+```
+
+
+# OBSP High risk screening
+Screening outcome summary, from July 2011 to June 2012: 
+
+* 6,863 women aged 29-69 referred and registered in the OBSP High Risk Screening Program
+
+* stratified in 2 risks groups: Category A: Known risk 964 (14.0%) and Category B: Referred to genetic assessment 5899 (86.0%) Completed
+
+* From Category B: 3349 (56.8%) Completed genetic counselling only (1189 were elegible for OBSP high risk screening), and 1852 (31.4%) Completed genetic counselling and testing (440 were elegible for OBSP high risk screening)
+
+* For a total of 2359 elegible woman. 
+
+* 2207 Women had at least an MRI/ultrasound screen
+
+* 611 had an Abnormal screens (abnormal call rate = 27.7%)
+
+* 554 (90.7% of 611) Women had a final result for diagnosis
+
+* 35 women had breast cancer (positive predictive value = 6.3%)
+
+* 27 of 2207 were Invasive (cancer detection rate = 12.6 per 1,000) 
+
+* 8 of 2207 Ductal carcinoma in situ (cancer detection rate = 3.7 per 1,000)
+
+
+After running 10 folds of cross-validation (cv), below is the AUC distributions achieved on held-out test sets:
+
+## Performance of combined T1w+T2w vs. only T1w classifiers 
+(all lesions -pooled data across cv-folds and plot pooled results)
+```{r eval=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+load("Z:/Cristina/Section2/revision2-finalTreebased-boosting/Outputs/T2SIvspredLMSIR_extratrees_summaryResults.RData")
+
+print(summary(allcvauc_imgT1_total))
+print(summary(allcvauc_T1wT2w_total))
+print(summary(allcvauc_T2wpLMSIR_total))
+
+# boxplots of cv-performances
+cvperfs = data.frame()
+cvperfs = rbind(cvperfs, data.frame(cvAUC=allcvauc_imgT1_total, group="T1w"))
+cvperfs = rbind(cvperfs, data.frame(cvAUC=allcvauc_T1wT2w_total, group="T1w+T2wText+T2w_SI"))
+cvperfs = rbind(cvperfs, data.frame(cvAUC=allcvauc_T2wpLMSIR_total, group="T1w+T2wText+predictiveLMSIR"))
+# find min
+minAUC = min(cvperfs$cvAUC)
+
+# plot
+p <- ggplot(cvperfs, aes(factor(group), cvAUC))
+p + geom_boxplot(aes(fill = factor(group)))
+
+par(mfrow=c(1,1))
+n=15
+colors = rainbow(n, s = 1, v = 1, start = 0, end = max(1, n - 1)/n, alpha = 1)
+
+# plot 
+print("Results for T1w-only features classifier:")
+p1 = calcAUC_plot(perfall_imgT1_total$obs, perfall_imgT1_total$C, 
+                           xptext=0.45, yptext=0.75 , 1, colors[2], atitle="")
+par(new=TRUE)
+print("Results for T2w + T2w_SI features classifier:")
+p2 = calcAUC_plot(perfall_imgT1T2_total$obs, perfall_imgT1T2_total$C, 
+                           xptext=0.55, yptext=0.65, 2, colors[9], atitle="")
+par(new=TRUE)
+print("Results for T2w T2wText + predictiveLMSIR features classifier:")
+p3 = calcAUC_plot(perfall_T2wpLMSIR_total$obs, perfall_T2wpLMSIR_total$C,
+                           xptext=0.65, yptext=0.55, 3, colors[11], 
+                  atitle="ROCs pooled heldout-patient across ALL folds")
+
+legend("bottomright", 
+       legend = c(paste0("T1w"),
+                    paste0("T1w + T2wText + T2w_SI"),
+                    paste0("T1w + T2wText + predictiveLMSIR")),
+       col = c(colors[2],colors[9],colors[11]), lty=c(1,2,3), lwd = 2)
+
+```
+ 
+
+## Confusion matrices of performance at optimal operating point
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+library(caret)
+
+print("Results for T1w-only features classifier (group 1):")
+print(p1$best_thr$sensitivity)
+th1 = as.numeric(row.names(p1$best_thr$sensitivity))
+confusionMatrix(ifelse(perfall_imgT1_total$C>=th1,"C","NC"), perfall_imgT1_total$obs, positive="C")
+
+print("Results for T2w text + SI features classifier (group 2):")
+print(p2$best_thr$sensitivity)
+th2 = as.numeric(row.names(p2$best_thr$sensitivity))
+confusionMatrix(ifelse(perfall_imgT1T2_total$C>=th2,"C","NC"), perfall_imgT1T2_total$obs, positive="C")
+
+
+print("Results for T2w predicted LMSIR features classifier (group 3):")
+print(p3$best_thr$sensitivity)
+th3 = as.numeric(row.names(p3$best_thr$sensitivity))
+confusionMatrix(ifelse(perfall_T2wpLMSIR_total$C>=th3,"C","NC"), perfall_T2wpLMSIR_total$obs, positive="C")
+
+```
+
+
+# comparing Sensitivity/Specificity at a reference value th1 for only T1w features
+```{r compare-SenSpec, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+T1wcoords <- coords(roc=p1$ROC, x = "all")
+rownames(T1wcoords) <- c("threshold","sensitivity","specificity")
+senT1w = T1wcoords[,T1wcoords["sensitivity",]>=0.7010309]
+print(senT1w)
+bestsenT1w = senT1w[,1]
+print("Results for T1w-only features classifier:")
+print(senT1w[,1])
+
+T1T1coords <- coords(roc=p2$ROC, x = "all")
+rownames(T1T1coords) <- c("threshold","sensitivity","specificity")
+senT1T2 = T1T1coords[,T1T1coords["sensitivity",]>=0.7010309]
+print(senT1T2)
+bestsensenT1T2 = senT1T2[,1]
+print("Results for T1w + T2wText + T2w_SI features classifier:")
+print(senT1T2[,1])
+
+
+T1T2pLMSIRcoords <- coords(roc=p3$ROC, x = "all")
+rownames(T1T2pLMSIRcoords) <- c("threshold","sensitivity","specificity")
+senT1T2pLMSIR = T1T2pLMSIRcoords[,T1T2pLMSIRcoords["sensitivity",]>=0.7010309]
+print(senT1T2pLMSIR)
+bestsensenT1T2pLMSIR = senT1T2pLMSIR[,1]
+print("Results for T1w + T2wText + pLMSIR features classifier:")
+print(senT1T2pLMSIR[,1])
+
+
+```
+
+
+# Sensitivity and Specificity Analysis
+
+source: Cancer Care Ontario, 2011. Ontario Breast Screening Program 2011 Report, 2011.
+
+OBSP program sensitivity (percentage of women diagnosed with breast cancer (DCIS or invasive) within a year of the mammogram date who had an abnormal OBSP screening mammogram result followed by a final diagnosis of breast cancer after completion of diagnostic assessment) has remained relatively high over time and was 86.1% for 2009. Therefore, 13.9% of women with breast cancer diagnosed within a year after the OBSP screen date did not have their breast cancer detected by the program.
+
+OBSP program specificity (percentage of women without a breast cancer diagnosis (DCIS and/or invasive) who had a normal screening mammogram result) has also remained relatively high over time and was 93.1% for 2009. Therefore, 6.9% of women without breast cancer had a false-positive result.
+
+Sensitivity and specificity are affected by a number of factors, including the radiologist's level of experience, the number of previous screens, and the woman's age, breast density and hormone replacement therapy use.
+
+In 2009, sensitivity was 83.0% in women aged 50 to 54, compared with 86.6% to 88.7% in women aged 60 and older. Sensitivity was greater in older women because their breasts are less dense and cancer detection rates are higher for this age group.
+Specificity was 90.6% in women aged 50 to 54, compared with 94.6% in women aged 70 to 74 in 2009. The specificity of older women's current screens is improved because these women have more previous screens for comparison.
+ 
+## Confusion matrices of performance compared to OBSP performing sensitivity:
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE, results="asis"}
+
+T1wcoords <- coords(roc=p1$ROC, x = "all")
+rownames(T1wcoords) <- c("threshold","sensitivity","specificity")
+senT1w = T1wcoords[,T1wcoords["sensitivity",]>=0.861]
+bestsenT1w = senT1w[,1]
+print("Results for T1w-only features classifier:")
+print(bestsenT1w)
+
+mT1w = cbind(as.numeric(c(round(100*bestsenT1w[2]), round(100*(1-bestsenT1w[2])))),
+      as.numeric(c(round(100*(1-bestsenT1w[3])), round(100*bestsenT1w[3]))))
+colnames(mT1w) = c("C","NC")
+rownames(mT1w) = c("predC","predNC")
+pandoc.table(mT1w, keep.line.breaks = TRUE)
+
+
+T2T1wcoords <- coords(roc=p3$ROC, x = "all")
+rownames(T2T1wcoords) <- c("threshold","sensitivity","specificity")
+senT2T1w = T2T1wcoords[,T2T1wcoords["sensitivity",]>=0.861]
+bestsenT2T1w = senT2T1w[,1]
+print("Results for T2w predicted LMSIR features classifier:")
+print(bestsenT2T1w)
+
+mT2T1w = cbind(as.numeric(c(round(100*bestsenT2T1w[2]), round(100*(1-bestsenT2T1w[2])))),
+      as.numeric(c(round(100*(1-bestsenT2T1w[3])), round(100*bestsenT2T1w[3]))))
+colnames(mT2T1w) = c("C","NC")
+rownames(mT2T1w) = c("predC","predNC")
+pandoc.table(mT2T1w, keep.line.breaks = TRUE)
+```
+
+
+## Confusion matrices of performance compared to OBSP performing specificity:
+```{r eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+
+T1wcoords <- coords(roc=p1$ROC, x = "all")
+rownames(T1wcoords) <- c("threshold","sensitivity","specificity")
+senT1w = T1wcoords[,T1wcoords["specificity",]>=0.931]
+bestsenT1w = senT1w[,ncol(senT1w)]
+print("Results for T1w-only features classifier:")
+print(bestsenT1w)
+
+mT1w = cbind(as.numeric(c(round(100*bestsenT1w[2]), round(100*(1-bestsenT1w[2])))),
+      as.numeric(c(round(100*(1-bestsenT1w[3])), round(100*bestsenT1w[3]))))
+colnames(mT1w) = c("C","NC")
+rownames(mT1w) = c("predC","predNC")
+pandoc.table(mT1w, keep.line.breaks = TRUE)
+
+
+T2T1wcoords <- coords(roc=p3$ROC, x = "all")
+rownames(T2T1wcoords) <- c("threshold","sensitivity","specificity")
+senT2T1w = T2T1wcoords[,T2T1wcoords["specificity",]>=0.931]
+bestsenT2T1w = senT2T1w[,ncol(senT2T1w)]
+print("Results for T2w predicted LMSIR features classifier:")
+print(bestsenT2T1w)
+
+mT2T1w = cbind(as.numeric(c(round(100*bestsenT2T1w[2]), round(100*(1-bestsenT2T1w[2])))),
+      as.numeric(c(round(100*(1-bestsenT2T1w[3])), round(100*bestsenT2T1w[3]))))
+colnames(mT2T1w) = c("C","NC")
+rownames(mT2T1w) = c("predC","predNC")
+pandoc.table(mT2T1w, keep.line.breaks = TRUE)
+
+```
+
+# Conclusion:
+Since high predictive performance is one of the pre-requisites for the applicability of a CAD system to human reading studies, results of this study are encouraging. The Ontario Screening Program (OBSP) defines program sensitivity as the percentage of women diagnosed with breast cancer (DCIS or invasive) within a year of the screening date who had an abnormal OBSP screening result followed by a final diagnosis of breast cancer after completion of diagnostic assessment. Similarly, specificity of OBSP screening is defined as the percentage of women without a breast cancer diagnosis (DCIS and/or invasive) who had a normal screening result. Currently, the reported program sensitivity is 86.1\% and specificity is 93.1\% \cite{CancerCareOntario2011}. Therefore, 13.9\% of women with breast cancer diagnosed within a year after screening did not have their breast cancer detected by the program and 6.9\% of women without breast cancer had a false-positive result. Increasing sensitivity while maintaining high specificity will result in a reduction of breast cancers missed by screening breast MRI, and increasing specificity while maintaining high sensitivity will result in a reduction of false-positive results with screening breast MRI. 
+
+In conclusion, our results showed that CAD predictive performance improved significantly with the introduction of T2w MRI lesion characterization. This improvement is important because CAD can potentially increase both sensitivity and specificity of screening breast MRI by aiding medical profesionals. The assistance of CAD in screening breast MRI is still a matter of further research, but we can argue in favor of the implications of a significant increase in CAD predictive performance. CAD outcomes can be positive (classifying the lesion as malignant) or negative (classifying the lesion as benign). Our CAD sensitivity is estimated as the percentage of diagnosed breast cancer lesions who had an positive CAD diagnosis and CAD specificity as the percentage of diagnosed benign lesions who had an negative CAD diagnosis. If we use the OBSP sensitivity as the minimum operating sensitivity for CAD, the resulting CAD specificity is 53.1\% for CAD lesion characterization based on T1w DCE-MRI only, and specificity increases to 61.3\% with the inclusion of T2w MRI in CAD lesion characterization. This increase in specificity is equivalent to a reduction of 8 false-positive results per 100 women screened with breast MRI who are found to not have cancer. 
+
+If instead we use the OBSP specificity of 93.1\%  as the minimum operating specificity for CAD, the resulting CAD sensitivities are 42.1\% for CAD lesion characterization with T1w features only and increases to 52.1\% with additional T2w features. This increase in sensitivity is equivalent to finding 10 additional cancers per 100 women screened who are found to have cancer. In conclusion, our results showed that CAD predictive performance improved significantly with the introduction of T2w MRI lesion characterization. This improvement is important because CAD can potentially increase both sensitivity and specificity of screening breast MRI by aiding medical professionals.
